@@ -24,7 +24,7 @@ def generate_tweak(workdir: str) -> str:
     """Copy the ElleKit/Theos observation tweak into the work directory."""
     dest = os.path.join(workdir, "ellekit")
     os.makedirs(dest, exist_ok=True)
-    for name in ("Tweak.xm", "Makefile", "control"):
+    for name in ("Tweak.xm", "Makefile", "control", "iosvuln_extract.plist"):
         src = os.path.join(TEMPLATE_DIR, name)
         if os.path.exists(src):
             shutil.copyfile(src, os.path.join(dest, name))
