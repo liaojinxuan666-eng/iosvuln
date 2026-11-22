@@ -51,6 +51,9 @@ class VulnClass(str, Enum):
     OOB_WRITE = "OOB_WRITE"
     MEMORY_CORRUPTION = "MEMORY_CORRUPTION"
     UAF = "UAF"
+    DANGLING_POINTER = "DANGLING_POINTER"      # 野指针：释放后仍被引用/外传
+    DOUBLE_FREE = "DOUBLE_FREE"                # 重复释放
+    NULL_DEREF = "NULL_DEREF"                  # 未校验的空指针解引用
     INTEGER_OVERFLOW = "INTEGER_OVERFLOW"
     RACE = "RACE"
     PRIVILEGE_ESCALATION = "PRIVILEGE_ESCALATION"

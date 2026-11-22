@@ -306,3 +306,60 @@ class MobileAnalyzerTests(unittest.TestCase):
         for needle in ("./usr/bin/iosvuln", "./usr/lib/iosvuln/iosvuln/cli.py",
                        "./usr/lib/iosvuln/iosvuln/storage.py", "./usr/lib/iosvuln/examples/"):
             self.assertIn(needle, listing)
+
+
+class PointerSafetyTests(unittest.TestCase):
+    def test_dangling_pointer_and_double_free(self):
+        from iosvuln import static_rules
+
+        with open(os.path.join(EXAMPLES, "manifest_iosurface_demo.json"), encoding="utf-8") as fh:
+            manifest = AnalysisManifest.from_json(fh.read())
+        findings = static_rules.PointerSafetyPlugin().run(_context(manifest))
+        classes = {f.vuln_class for f in findings}
+        self.assertIn("DANGLING_POINTER", classes)
+        self.assertIn("DOUBLE_FREE", classes)
+        self.assertTrue(all(f.assembly for f in findings))
+        self.assertTrue(all("kfree" in " ".join(f.assembly) for f in findings
+                            if f.vuln_class in ("DANGLING_POINTER", "DOUBLE_FREE")))
+
+    def test_no_null_deref_false_positive_on_external_buffer(self):
+        from iosvuln import static_rules
+
+        payload = {
+            "target": "com.apple.driver.IOSurface",
+            "functions": [{
+                "name": "getProperty",
+                "calls": ["copyout", "memcpy"],
+                "call_sites": ["0x1000: bl _copyout", "0x1010: bl _memcpy"],
+            }],
+        }
+        manifest = AnalysisManifest.from_json(json.dumps(payload))
+        findings = static_rules.PointerSafetyPlugin().run(_context(manifest))
+        self.assertFalse(any(f.vuln_class == "NULL_DEREF" for f in findings))
+
+
+class ProgressTests(unittest.TestCase):
+    def test_progress_counts_findings(self):
+        import io
+        from iosvuln.progress import Progress
+
+        buf = io.StringIO()
+        p = Progress(enabled=True, stream=buf)
+        p.start("test")
+        p.step("plugin-a", 1, 2, 3)
+        p.step("plugin-b", 2, 2, 7)
+        p.finish("done", 7)
+        out = buf.getvalue()
+        self.assertIn("疑似漏洞: 7", out)
+        self.assertIn("100%", out)
+
+    def test_progress_disabled_is_silent(self):
+        import io
+        from iosvuln.progress import Progress
+
+        buf = io.StringIO()
+        p = Progress(enabled=False, stream=buf)
+        p.start("test")
+        p.step("x", 1, 1, 5)
+        p.finish()
+        self.assertEqual(buf.getvalue(), "")

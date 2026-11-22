@@ -16,5 +16,11 @@ else
            "$BASE/tweaks" "$BASE/logs"
 fi
 
+# Wire zsh shortcuts into root and mobile shells (idempotent, one line each).
+SHORTCUT='source /usr/lib/iosvuln/iosvuln.zsh'
+for rc in /var/root/.zshrc /var/mobile/.zshrc; do
+  [ -f "$rc" ] || touch "$rc" 2>/dev/null || continue
+  grep -Fqx "$SHORTCUT" "$rc" 2>/dev/null || echo "$SHORTCUT" >> "$rc" 2>/dev/null || true
+done
 chown -R mobile:mobile /var/mobile/iosvuln 2>/dev/null || true
 exit 0

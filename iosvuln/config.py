@@ -27,7 +27,7 @@ class Config:
     targets: List[str] = field(default_factory=lambda: list(DEFAULT_TARGETS))
     plugins: List[str] = field(
         default_factory=lambda: [
-            "vuln-primitives", "taint-sink", "lock-balance",
+            "vuln-primitives", "pointer-safety", "taint-sink", "lock-balance",
             "api-risk", "surface-props", "hook-observation",
         ]
     )

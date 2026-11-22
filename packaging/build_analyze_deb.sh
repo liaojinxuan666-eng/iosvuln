@@ -19,6 +19,8 @@ find "$ROOT/iosvuln" -maxdepth 1 -type f -name '*.py' -exec cp {} "$APP/iosvuln/
 cp "$ROOT"/examples/*.json "$ROOT"/examples/*.log "$APP/examples/" 2>/dev/null || true
 cp "$ROOT/README.md" "$APP/README.md" 2>/dev/null || true
 
+# zsh shortcut file is a hand-maintained source file (not generated), keep it.
+
 chmod 0755 "$DEB/DEBIAN/postinst" "$DEB/usr/bin/iosvuln"
 chmod 0644 "$DEB/DEBIAN/control"
 

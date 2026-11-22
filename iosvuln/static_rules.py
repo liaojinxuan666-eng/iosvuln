@@ -380,3 +380,169 @@ class VulnPrimitivesPlugin(_RulePlugin):
             recommendation="复核上述汇编地址处的参数来源、边界检查与权限判断；本报告不生成利用代码。",
             tags=[vuln_class],
         )
+
+
+# --- Pointer-safety vocabulary ------------------------------------------------
+# Deallocation / reference release.
+FREE_TOKENS = (
+    "kfree", "iofree", "osfree", "free", "vmdeallocate", "iodeletememoryentry",
+    "release", "deleter", "destroy", "decrementusecount", "removeproperty",
+)
+# Allocation / creation (a fresh object can legitimize a later use).
+ALLOC_TOKENS = (
+    "kalloc", "iomalloc", "osmalloc", "malloc", "vmallocate", "alloc",
+    "withaddressrange", "create", "copyin", "new", "initwithproperties",
+)
+# Operations that dereference / touch a buffer through a pointer.
+PTR_USE_TOKENS = (
+    "memcpy", "memmove", "bcopy", "writebytes", "readbytes", "copybytes",
+    "getbaseaddress", "setvalue", "getvalue", "setobject", "getobject",
+    "strcpy", "strncpy", "snprintf",
+)
+# Reference increments that balance a release.
+RETAIN_TOKENS = ("retain", "incrementusecount", "get", "copy")
+
+
+@register
+class PointerSafetyPlugin(_RulePlugin):
+    name = "pointer-safety"
+    description = "野指针 / UAF / 重复释放：基于释放-使用调用序列（含汇编地址）"
+
+    @staticmethod
+    def _site_token(site: CallSite) -> str:
+        return _norm(site.target) or _norm(site.mnemonic)
+
+    @staticmethod
+    def _first(site: CallSite, tokens: Sequence[str]) -> str:
+        token = PointerSafetyPlugin._site_token(site)
+        return next((t for t in tokens if t in token), "")
+
+    def _scan(self, manifest: AnalysisManifest) -> List[Finding]:
+        findings: List[Finding] = []
+        for fn in manifest.functions:
+            # Ordered call stream from r2 (falls back to unordered fn.calls).
+            sites = list(fn.call_sites)
+            if not sites:
+                names = list(fn.calls)
+                frees = _hits(names, FREE_TOKENS)
+                uses = _hits(names, PTR_USE_TOKENS)
+                if frees and uses:
+                    findings.append(
+                        self._make(
+                            manifest, fn,
+                            "DANGLING_POINTER",
+                            "释放与使用共现（无指令顺序，需人工确认）",
+                            f"函数同时引用释放 {frees} 与指针访问 {uses}，但缺少指令级顺序；"
+                            "按野指针/UAF 优先审计。",
+                            _assembly(fn, list(frees) + list(uses)),
+                            52.0, 0.45, "调用共现（无序）",
+                        )
+                    )
+                continue
+
+            events: List[tuple] = []  # (kind, token, site)
+            for site in sites:
+                kind = ""
+                token = ""
+                for k, toks in (
+                    ("free", FREE_TOKENS), ("alloc", ALLOC_TOKENS),
+                    ("use", PTR_USE_TOKENS), ("retain", RETAIN_TOKENS),
+                ):
+                    token = self._first(site, toks)
+                    if token:
+                        kind = k
+                        break
+                if kind:
+                    events.append((kind, token, site))
+
+            # 1) free followed by pointer use before a fresh allocation.
+            live_freed: List[tuple] = []  # list of (token, site) awaiting use
+            for kind, token, site in events:
+                if kind == "free":
+                    live_freed.append((token, site))
+                elif kind == "alloc":
+                    live_freed.clear()  # a fresh object legitimizes subsequent use
+                elif kind == "use" and live_freed:
+                    ftoken, fsite = live_freed[0]
+                    evidence = [fsite.render(), site.render()]
+                    findings.append(
+                        self._make(
+                            manifest, fn,
+                            "DANGLING_POINTER",
+                            f"释放后再次访问（野指针/UAF）：{ftoken} → {token}",
+                            "在释放调用之后、重新分配之前出现指针访问，符合 use-after-free / "
+                            "野指针模式；需人工确认是否为同一对象及其别名。",
+                            evidence, 74.0, 0.62, f"{ftoken} → {token}",
+                        )
+                    )
+                    live_freed.clear()
+
+            # 2) two frees without an intervening allocation -> double free.
+            frees = [e for e in events if e[0] == "free"]
+            allocs = [e for e in events if e[0] == "alloc"]
+            if len(frees) >= 2:
+                # crude but effective for linear streams: >1 free and not enough allocs
+                if len(frees) > len(allocs):
+                    evidence = [e[2].render() for e in frees[:4]]
+                    findings.append(
+                        self._make(
+                            manifest, fn,
+                            "DOUBLE_FREE",
+                            f"疑似重复释放：{len(frees)} 次 free / {len(allocs)} 次 alloc",
+                            "释放次数多于分配次数，存在对同一指针重复释放的风险；"
+                            "需人工确认各路径上的对象归属。",
+                            evidence, 70.0, 0.58, "重复 free",
+                        )
+                    )
+
+            # 3) pointer use with no allocation AND no external source that could
+            #    legitimately own the buffer (copyin / mapping / external args).
+            #    Otherwise getProperty(copyout+memcpy) would false-positive.
+            has_external_buffer = bool(_hits(list(fn.calls), SOURCE_TOKENS))
+            if (
+                any(e[0] == "use" for e in events)
+                and not any(e[0] == "alloc" for e in events)
+                and not has_external_buffer
+            ):
+                first_use = next(e for e in events if e[0] == "use")
+                findings.append(
+                    self._make(
+                        manifest, fn,
+                        "NULL_DEREF",
+                        f"指针访问前无分配/外部来源/校验：{first_use[1]}",
+                        "函数内出现指针解引用类操作，但未见本地分配、外部缓冲来源或校验调用；"
+                        "可能为未初始化/空指针，需人工确认。",
+                        [first_use[2].render()], 46.0, 0.42, first_use[1],
+                    )
+                )
+        return findings
+
+    def _make(
+        self, manifest: AnalysisManifest, fn: Function, vuln_class: str,
+        title: str, description: str, assembly: List[str], score: float,
+        confidence: float, symbol: str,
+    ) -> Finding:
+        if any(h in _norm(fn.name) for h in SURFACE_FN_HINTS):
+            score += 6.0
+        return Finding(
+            id=_id(self.name, manifest, fn, f"{vuln_class}:{title}"),
+            title=f"[{vuln_class}] {title}",
+            severity=Severity.from_score(score),
+            layer=Layer.STATIC,
+            target=manifest.target,
+            description=description,
+            location=f"{fn.name} @ {fn.address}" if fn.address else fn.name,
+            evidence=assembly,
+            assembly=assembly,
+            score=round(score, 1),
+            confidence=confidence,
+            cwe={
+                "DANGLING_POINTER": "CWE-416 Use After Free",
+                "DOUBLE_FREE": "CWE-415 Double Free",
+                "NULL_DEREF": "CWE-476 NULL Pointer Dereference",
+            }.get(vuln_class, ""),
+            vuln_class=vuln_class,
+            symbol=symbol,
+            recommendation="复核该汇编地址处对象的生命周期与引用计数；本报告不生成利用代码。",
+            tags=[vuln_class],
+        )

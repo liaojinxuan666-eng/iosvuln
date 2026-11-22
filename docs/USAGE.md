@@ -281,22 +281,27 @@ iosvuln run --kext-dir ./exported-kexts \
 
 | 文件 | 内容 |
 | --- | --- |
-| `report.md` | 人类可读报告 |
+| `report.html` | **推荐**：自包含单文件，浏览器打开，彩色分类、可折叠详细线索 |
+| `report.md` | Markdown 报告，含摘要表 + 目录 |
 | `report.json` | 结构化结果，便于二次处理 |
 | `manifest.json` | r2 提取的中间表示（函数、调用、字符串） |
 
 报告结构：
 
+- **摘要 + 目录**：按漏洞类别的数量与最高严重度一览，点击目录跳转。
 - **§0 环境信息**：设备 / 系统版本 / 架构 / 内核。
 - **§0.1 可分析目标**：目录、可用性、已选目标。
-- **§1–2**：流水线摘要与统计。
-- **§3.1 按原语归集的汇编位置**：核心输出，按漏洞类型归集每条线索的汇编地址。
+- **§1–2**：流水线概览与统计。
+- **§3.1 按原语归集的汇编位置**：核心输出，按漏洞类型分章节，**汇编地址完整列出不截断**。
 - **§4 详细线索**：每条 finding 的证据、评分、置信度、CWE 与人工复核建议。
 
 漏洞类型对照：
 
 | 类型 | 含义 |
 | --- | --- |
+| `DANGLING_POINTER` | **野指针 / UAF**：释放后再次访问（free→use 调用序列） |
+| `DOUBLE_FREE` | **重复释放**：释放次数多于分配次数 |
+| `NULL_DEREF` | 指针访问前无分配 / 外部来源 / 校验 |
 | `OOB_WRITE` / `MEMORY_CORRUPTION` | 用户输入源与 `memcpy` / `memmove` / `writeBytes` / 分配器共现 |
 | `OOB_READ` | `copyout` / `readBytes` / `GetBaseAddress` 与 size/offset 共现 |
 | `INTEGER_OVERFLOW` | 尺寸计算与分配/拷贝组合 |
@@ -453,7 +458,9 @@ iosvuln plugins        列出已注册分析插件
 iosvuln --version      显示版本
 ```
 
-`run` / `demo` 常用：`--home <dir>` 指定长期目录、`--no-archive` 关闭归档。
+`run` / `demo` 常用：`--home <dir>` 指定长期目录、`--no-archive` 关闭归档、`--no-progress` 关闭实时进度条与漏洞计数（默认开启，边分析边显示已发现的疑似漏洞数）。
+
+分析完成后查看 HTML 报告：`open <workdir>/report.html`（macOS）或直接在浏览器/文件管理器打开。
 
 设备端：
 

@@ -13,9 +13,9 @@ iOS 内核驱动（kext）**静态 + 提取式 Hook 双层分析流水线**。�
    --kext-dir <dir> | --kernelcache <path> | --device | --ipsw <file>
 3. ipsw kernel kexts / extract → Mach-O ；或直接用 --kext-dir
 4. r2 / r2pipe → AnalysisManifest（含每条调用的汇编地址）
-   ├─ vuln-primitives / taint-sink / lock-balance / api-risk / surface-props
+   ├─ vuln-primitives / pointer-safety / taint-sink / lock-balance / api-risk / surface-props
    └─ 提取式 ElleKit tweak 导出的符号地址 + 机器码
-5. report.md / report.json（按原语归集的汇编位置）
+5. report.md / report.html / report.json（按原语归集的汇编位置，实时进度条）
 ```
 
 **提取式 Hook**：`Tweak.xm` 用 `MSFindSymbol` 解析 `IOSurface.framework` 符号，导出函数地址与前 96 字节机器码到 `/var/mobile/iosvuln/extracted.json`。**不安装 inline hook、不改写任何函数行为**。
@@ -37,7 +37,15 @@ pip3 install '.[r2]'      # 可选：r2pipe
 | `dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb` | 采集器 `iosvuln-collect [路径]`，采集 kernelcache/kext + 设备信息 |
 | `dev.iosvuln.extract_0.1.1_iphoneos-arm64.deb` | 提取式 tweak（已编译 dylib），导出 `IOSurface.framework` 符号地址与机器码 |
 
-三者共用长期目录 `/var/mobile/iosvuln/`（collections/cache/reports/tweaks/logs/config.json），数据互通。手机端分析需 Sileo 装 `python3`；真实反汇编需 `radare2`（缺失时自动降级 DEMO）。
+三者共用长期目录 `/var/mobile/iosvuln/`（collections/cache/reports/tweaks/logs/config.json），数据互通。
+
+手机端依赖（均可从 **Procursus 源**用 Sileo 安装，截图已确认可用）：`python3`、`radare2`、`ipsw`。装了 `ipsw` 后手机端也能直接从 IPSW 提取内核；这些命令缺失时自动降级 DEMO。安装 `analyze` deb 会自动把 zsh 快捷命令写入 `~/.zshrc`（NewTerm 直接可用）：
+
+```
+iv   = iosvuln        ivs  = 扫描当前目录   ivd  = demo        ivi  = info
+ivt  = targets        ivh  = home           ivim = import      ivl  = history
+ivk <kernelcache>     = 直接扫描指定内核    ivall = 采集+扫描一条龙
+```
 
 **文档**：[安装指南 docs/INSTALL.md](docs/INSTALL.md) · [使用指南 docs/USAGE.md](docs/USAGE.md)
 
@@ -69,16 +77,20 @@ iosvuln import ./extracted.json
 iosvuln history
 iosvuln run --home /data/iosvuln --workdir ./out    # 指定长期目录
 iosvuln run --no-archive --workdir ./out            # 关闭自动归档
+iosvuln run --no-progress --workdir ./out           # 关闭进度条（默认显示）
 ```
 
 `--target` 支持：`all`/`*`（全量，受 `--max-targets` 限制）、`auto`/`catalog`（内置目录中高风险目标）、`1,3,5`（`iosvuln targets` 显示的编号）、任意 bundle id / 名称子串。
 
 ## 输出
 
-报告新增 **§0 环境信息**、**§0.1 可分析目标**（目录/可用/已选），以及 **§3.1 按原语归集的汇编位置**：
+报告输出 **Markdown + HTML + JSON** 三种格式，含**摘要表、目录、按原语分类章节**，汇编位置**完整列出不截断**：
 
 | 原语 | 含义 |
 | --- | --- |
+| `DANGLING_POINTER` | **野指针 / UAF**：释放后再次访问（基于 free→use 调用序列与地址） |
+| `DOUBLE_FREE` | **重复释放**：释放次数多于分配次数 |
+| `NULL_DEREF` | 指针访问前无分配/外部来源/校验 |
 | `OOB_WRITE` / `MEMORY_CORRUPTION` | 用户输入源与 `memcpy` / `memmove` / `writeBytes` / 分配器共现 |
 | `OOB_READ` | `copyout` / `readBytes` / `GetBaseAddress` 与 size/offset 共现 |
 | `INTEGER_OVERFLOW` | 尺寸计算与分配/拷贝组合 |
@@ -87,11 +99,13 @@ iosvuln run --no-archive --workdir ./out            # 关闭自动归档
 | `RCE` | `blr`（函数指针）间接调用点 |
 | `RACE` / `UAF` | 加解锁失衡，且伴随释放/引用计数操作 |
 
-每条 finding 带 `assembly`（`地址: 指令 目标`）、`vuln_class`、`symbol`、证据和置信度。多目标时每条 finding 的 `target` 字段标明来源 kext。
+每条 finding 带 `assembly`（`地址: 指令 目标`）、`vuln_class`、`symbol`、证据和置信度。多目标时每条 finding 的 `target` 字段标明来源 kext。`report.html` 是自包含的单文件，可直接用浏览器打开，详细线索可折叠。
 
 ## 插件与测试
 
-内置：`vuln-primitives`、`taint-sink`、`lock-balance`、`api-risk`、`surface-props`、`hook-observation`。
+内置：`vuln-primitives`、`pointer-safety`、`taint-sink`、`lock-balance`、`api-risk`、`surface-props`、`hook-observation`。
+
+分析过程默认显示**实时进度条**，动态更新已发现的疑似漏洞数量；用 `--no-progress` 关闭。
 
 ```bash
 PYTHONPATH=. python3 -m unittest discover -s tests -v   # 15 项

@@ -145,7 +145,23 @@ iosvuln history
 
 手机端会自动把 home 指向 `/var/mobile/iosvuln`（由 `storage.py` 的 iOS 检测决定），因此分析端、采集器、提取式 tweak 三方数据落在同一处、自动互通。也可用 `IOSVULN_HOME` 覆盖。
 
-**能力边界**：手机上没有 `ipsw`（Go 二进制，iOS 不适用）。真实反汇编需要 Sileo 装 `radare2`；没装时会自动降级到 DEMO 合成数据。所以手机端最实用的组合是：`collect` 采数据 → 手机上 `iosvuln demo` 验证流程，或装了 radare2 后 `iosvuln run --kernelcache ...` 做真实分析；full IPSW 提取流程仍建议在电脑端做。
+**Procursus 依赖（推荐全装）**：这三样都能从 **Procursus 源**用 Sileo 直接安装，已实测可用：
+
+- `python3` — 分析引擎运行时（analyze deb 已声明依赖）
+- `radare2` — 真实反汇编；没装时自动降级 DEMO 合成数据
+- `ipsw` — iOS 越狱包（Procursus 3.1.x），装了以后手机端也能直接从 IPSW 提取内核、列 kext
+
+工具会自动探测 `/var/jb/usr/bin`、`/usr/bin` 等路径下的 `ipsw`/`r2`，无需手动配路径。装齐后手机端能力与电脑端一致：既能 `--ipsw` 从完整包提取，也能 `--kernelcache` / `--kext-dir` 分析已有数据。
+
+**zsh 快捷命令**：`analyze` deb 安装时会自动向 `~/.zshrc` 写入一行 source，NewTerm 重开后即可用短命令：
+
+```
+iv   = iosvuln        ivs  = 扫描当前目录       ivd = demo        ivi = info
+ivt  = targets        ivh  = home               ivim = import     ivl = history
+ivk <kernelcache>     = 直接扫描指定内核        ivall = 采集+扫描一条龙
+```
+
+例如手机上一条命令扫描内核：`ivk /var/mobile/iosvuln/kernelcache`，进度条会实时显示已找到的疑似漏洞数。
 
 ### 4. 验证安装
 

@@ -118,9 +118,11 @@
       ],
       "complexity": 13,
       "call_sites": [
-        "0xfffffff0065ab140: bl _IOMemoryDescriptor::withAddressRange",
-        "0xfffffff0065ab1b0: bl _memmove",
-        "0xfffffff0065ab200: bl _writeBytes"
+        "0xfffffff0065ab140: bl _kalloc",
+        "0xfffffff0065ab168: bl _memcpy",
+        "0xfffffff0065ab190: bl _kfree",
+        "0xfffffff0065ab1b0: bl _memcpy",
+        "0xfffffff0065ab1d8: bl _kfree"
       ]
     },
     {

@@ -56,8 +56,9 @@ class PipelineResult:
 
 
 class Pipeline:
-    def __init__(self, cfg: Config):
+    def __init__(self, cfg: Config, progress=None):
         self.cfg = cfg
+        self.progress = progress
         self.dep = check_dependencies(cfg)
         self.warnings: List[str] = []
         self.device = gather_device(cfg, self.dep)
@@ -204,6 +205,10 @@ class Pipeline:
         selected: List[Target],
     ) -> PipelineResult:
         all_findings: List[Finding] = []
+        total_steps = max(1, len(manifests) * len(self.cfg.plugins))
+        step = 0
+        if self.progress:
+            self.progress.start("分析插件")
         for manifest in manifests:
             context = AnalysisContext(
                 manifest=manifest,
@@ -213,13 +218,19 @@ class Pipeline:
                 observations=observations,
             )
             for name in self.cfg.plugins:
+                step += 1
                 try:
                     plugin = instantiate(name)
                     if plugin.layer == Layer.HOOK.value and not observations:
+                        if self.progress:
+                            self.progress.step(f"跳过 {name}", step, total_steps)
                         continue
                     all_findings.extend(plugin.run(context))
                 except (KeyError, ValueError) as exc:
                     self.warnings.append(f"插件 {name} 未执行: {exc}")
+                if self.progress:
+                    self.progress.step(f"{manifest.target[:18]} · {name}",
+                                       step, total_steps, len(all_findings))
 
         seen = {f.id: f for f in all_findings}
         min_rank = Severity.INFO.rank
@@ -273,6 +284,9 @@ class Pipeline:
                 manifest_payload if isinstance(manifest_payload, str)
                 else json.dumps(manifest_payload, indent=2, ensure_ascii=False)
             )
+
+        if self.progress:
+            self.progress.finish("分析完成", len(findings))
 
         return PipelineResult(
             config=self.cfg,

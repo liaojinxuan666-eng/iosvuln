@@ -18,8 +18,8 @@ from .plugins import list_plugins
 from . import static_rules  # noqa: F401 - registers static plugins
 
 DEFAULT_PLUGINS = [
-    "vuln-primitives", "taint-sink", "lock-balance", "api-risk",
-    "surface-props", "hook-observation",
+    "vuln-primitives", "pointer-safety", "taint-sink", "lock-balance",
+    "api-risk", "surface-props", "hook-observation",
 ]
 
 
@@ -102,6 +102,7 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--min-severity", default="INFO", choices=["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"])
     parser.add_argument("--home", default="", help="长期存储目录（默认 ~/.iosvuln，可用 IOSVULN_HOME）")
     parser.add_argument("--no-archive", action="store_true", help="不把报告归档到长期存储目录")
+    parser.add_argument("--no-progress", action="store_true", help="关闭实时进度条与漏洞计数")
     parser.add_argument("--quiet", action="store_true", help="只输出报告路径")
 
 
@@ -282,7 +283,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     cfg = _config_from_args(args, demo=(command == "demo"))
-    result = Pipeline(cfg).run()
+    from .progress import Progress
+
+    # Keep stdout clean for machine parsing in --quiet mode.
+    show_progress = not getattr(args, "no_progress", False) and not getattr(args, "quiet", False)
+    progress = Progress(enabled=show_progress)
+    result = Pipeline(cfg, progress=progress).run()
     _print_result(result, quiet=getattr(args, "quiet", False))
     return 0
 

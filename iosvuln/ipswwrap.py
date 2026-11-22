@@ -56,18 +56,48 @@ def run(argv: List[str], cwd: Optional[str] = None, timeout: int = 900) -> Comma
         return CommandResult(argv, 124, exc.stdout or "", f"timeout after {timeout}s")
 
 
+# Procursus / rootless iOS installs these in /var/jb/usr/bin, which is usually
+# on PATH inside a jailbroken shell — but not when launched from a tweak or a
+# minimal environment. Probe the known prefixes explicitly as a fallback.
+_EXTRA_BIN_DIRS = (
+    "/var/jb/usr/bin", "/var/jb/bin", "/usr/bin", "/usr/local/bin",
+    "/opt/procursus/usr/bin", "/opt/homebrew/bin",
+)
+
+
+def _find_binary(name: str, configured: str) -> Optional[str]:
+    """Resolve a binary from config, PATH, then jailbreak/homebrew prefixes."""
+    if configured:
+        if os.path.isabs(configured):
+            return configured if os.path.exists(configured) else None
+        found = which(configured)
+        if found:
+            return found
+    found = which(name)
+    if found:
+        return found
+    for directory in _EXTRA_BIN_DIRS:
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def check_dependencies(cfg: Config) -> Dict[str, Any]:
-    ipsw = which(cfg.ipsw_path) if not os.path.isabs(cfg.ipsw_path) else (
-        cfg.ipsw_path if os.path.exists(cfg.ipsw_path) else None
-    )
-    r2 = which(cfg.r2_path) if not os.path.isabs(cfg.r2_path) else (
-        cfg.r2_path if os.path.exists(cfg.r2_path) else None
-    )
+    ipsw = _find_binary("ipsw", cfg.ipsw_path)
+    r2 = _find_binary("r2", cfg.r2_path)
     status: Dict[str, Any] = {
         "ipsw": ipsw,
         "r2": r2,
         "r2pipe": False,
+        "is_ios": False,
     }
+    try:
+        from .storage import is_ios
+
+        status["is_ios"] = is_ios()
+    except ImportError:
+        pass
     if ipsw:
         res = run([ipsw, "version"], timeout=30)
         status["ipsw_version"] = (res.stdout or res.stderr).strip().splitlines()[:1]
