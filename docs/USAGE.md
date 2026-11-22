@@ -19,8 +19,9 @@ iosvuln 对 iOS 内核驱动（kext）做**静态分析 + 提取式 Hook** 双�
 9. [第五步：解读报告](#9-第五步解读报告)
 10. [设备端采集器详解](#10-设备端采集器详解)
 11. [提取式 ElleKit tweak](#11-提取式-ellekit-tweak)
-12. [命令参考](#12-命令参考)
-13. [常见问题](#13-常见问题)
+12. [长期存储目录](#12-长期存储目录)
+13. [命令参考](#13-命令参考)
+14. [常见问题](#14-常见问题)
 
 ---
 
@@ -47,35 +48,19 @@ iosvuln 对 iOS 内核驱动（kext）做**静态分析 + 提取式 Hook** 双�
 
 ## 2. 安装
 
-### 2.1 分析端（macOS / Linux）
-
-需要 Python 3.11+。
+完整的安装步骤（分析端依赖、Sileo 装 deb、Actions 构建、卸载）见专门的 **[安装指南 INSTALL.md](INSTALL.md)**。这里只列最简命令：
 
 ```bash
-cd iosvuln
-pip3 install -e .
-pip3 install '.[r2]'          # 可选：安装 r2pipe 后由 r2 后端做真实反汇编
+# 分析端
+cd iosvuln && python3 -m pip install -e .
+iosvuln deps                 # 检查 ipsw / r2 / r2pipe
+iosvuln home --init          # 初始化长期存储目录 ~/.iosvuln
+
+# 设备端：Sileo 安装 Release 里的两个 deb，然后
+iosvuln-collect              # 在设备上采集
 ```
 
-检查依赖是否就绪：
-
-```bash
-iosvuln deps      # 显示 ipsw / r2 / r2pipe 是否可用
-iosvuln plugins   # 列出已注册的分析插件
-```
-
-缺少 `ipsw` 或 `r2` 时，工具会自动降级到内置合成数据（DEMO fixture），不会崩溃。
-
-### 2.2 设备端（越狱 iPhone，Sileo 安装）
-
-从 [Releases](https://github.com/liaojinxuan666-eng/iosvuln/releases) 下载并安装：
-
-| deb | 作用 |
-| --- | --- |
-| `dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb` | 设备侧采集器，提供 `iosvuln-collect` 命令 |
-| `dev.iosvuln.extract_0.1.1_iphoneos-arm64.deb` | 提取式 tweak（已编译 dylib），导出符号地址与机器码 |
-
-在 Sileo 中“安装本地文件”选中这两个 deb 即可。两者都是 rootless 路径（`/var/jb/...`），适配 Dopamine 等 rootless 越狱。
+从 [Releases](https://github.com/liaojinxuan666-eng/iosvuln/releases) 下载 `collect` 与 `extract` 两个 deb，Sileo「安装本地文件」即可，均为 rootless 布局。
 
 ---
 
@@ -403,7 +388,55 @@ make package FINALPACKAGE=1
 
 ---
 
-## 12. 命令参考
+## 12. 长期存储目录
+
+`--workdir` 是**单次分析的输出目录**，容易被清理或覆盖。工具另外维护一个**长期存储目录**（默认 `~/.iosvuln/`），用于跨次持久保存：
+
+```
+~/.iosvuln/
+├── collections/     # 从设备导入的 collection.json / extracted.json
+├── cache/           # kernelcache / kext 缓存（含 kexts/ 子目录）
+├── reports/         # 每次分析的历史报告快照（按时间戳 + 目标命名）
+├── tweaks/          # 最近一次生成的 ElleKit 工程
+├── logs/            # 会话日志
+└── config.json      # 默认目标、插件、严重度等偏好
+```
+
+**自动行为**：每次 `iosvuln run` / `demo` 成功后，会按时间戳把 `report.md` / `report.json` / `manifest.json` 快照到 `reports/`，并把生成的 tweak 工程存到 `tweaks/`。分析时若未在 `--workdir` 找到 `extracted.json`，会自动从长期存储里找最近导入的那份。
+
+**管理命令**：
+
+```bash
+iosvuln home                    # 查看当前路径与目录结构
+iosvuln home --init             # 显式创建目录与默认配置
+iosvuln home --json             # JSON 格式查看
+
+# 把设备采集文件导入长期存储（带时间戳，不覆盖原件）
+iosvuln import ./collection.json
+iosvuln import ./extracted.json
+iosvuln import ./kernelcache
+iosvuln import ./session.log --kind log
+
+# 查看历史归档
+iosvuln history
+iosvuln history --limit 5 --json
+```
+
+**改路径**（三选一，优先级从高到低）：
+
+```bash
+iosvuln run --home /data/iosvuln ...   # 单次：--home 参数
+export IOSVULN_HOME=/data/iosvuln      # 长期：环境变量（推荐写进 shell 配置）
+iosvuln home --home /data/iosvuln --init
+```
+
+**关闭自动归档**：给 `run` / `demo` 加 `--no-archive`，报告只写 `--workdir`，不进长期存储。
+
+> 设备端对应目录是 `/var/mobile/iosvuln/`（由采集器写入），与电脑端相互独立。
+
+---
+
+## 13. 命令参考
 
 ```
 iosvuln run            执行完整流水线（加 --demo 使用合成数据）
@@ -412,10 +445,15 @@ iosvuln info           探测设备 / 环境信息
 iosvuln targets        列出可分析目标
 iosvuln kexts <cache>  列出 kernelcache 中的 kext
 iosvuln hook-scaffold  生成 ElleKit tweak 工程源码
+iosvuln home           查看/初始化长期存储目录（--init / --json）
+iosvuln import <file>  导入采集文件到长期存储（--kind 指定类型）
+iosvuln history        列出历史归档报告（--limit / --json）
 iosvuln deps           检查 ipsw / r2 / r2pipe 可用性
 iosvuln plugins        列出已注册分析插件
 iosvuln --version      显示版本
 ```
+
+`run` / `demo` 常用：`--home <dir>` 指定长期目录、`--no-archive` 关闭归档。
 
 设备端：
 
@@ -425,7 +463,7 @@ iosvuln-collect [路径]   采集 kernelcache / kext 与设备信息
 
 ---
 
-## 13. 常见问题
+## 14. 常见问题
 
 **Q：`ipsw idev` 子命令不存在？**
 不同版本 ipsw 的子命令不一样。直接用 `--kext-dir` 或 `--kernelcache` 指定本地文件最稳，设备端用采集器导出。

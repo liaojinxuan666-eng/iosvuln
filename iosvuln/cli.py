@@ -57,6 +57,23 @@ def _build_parser() -> argparse.ArgumentParser:
     scaffold = sub.add_parser("hook-scaffold", help="生成 ElleKit 用户态 hook 工程")
     scaffold.add_argument("--workdir", default="iosvuln-out")
 
+    home = sub.add_parser("home", help="显示长期存储目录结构")
+    home.add_argument("--home", default="", help="覆盖长期存储目录（默认 ~/.iosvuln）")
+    home.add_argument("--json", action="store_true")
+    home.add_argument("--init", action="store_true", help="创建目录与默认配置")
+
+    imp = sub.add_parser("import", help="把设备采集文件导入长期存储")
+    imp.add_argument("file", help="要导入的文件路径")
+    imp.add_argument("--kind", default="auto",
+                     choices=["auto", "collection", "extracted", "kernelcache", "kext", "log", "other"],
+                     help="数据类型；auto 时按文件名推断")
+    imp.add_argument("--home", default="", help="覆盖长期存储目录")
+
+    history = sub.add_parser("history", help="列出已归档的历史报告")
+    history.add_argument("--home", default="", help="覆盖长期存储目录")
+    history.add_argument("--limit", type=int, default=20)
+    history.add_argument("--json", action="store_true")
+
     return parser
 
 
@@ -83,6 +100,8 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-targets", type=int, default=12, help="全量分析时最多处理的目标数")
     parser.add_argument("--interactive", action="store_true", help="交互式选择可分析目标")
     parser.add_argument("--min-severity", default="INFO", choices=["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"])
+    parser.add_argument("--home", default="", help="长期存储目录（默认 ~/.iosvuln，可用 IOSVULN_HOME）")
+    parser.add_argument("--no-archive", action="store_true", help="不把报告归档到长期存储目录")
     parser.add_argument("--quiet", action="store_true", help="只输出报告路径")
 
 
@@ -102,6 +121,8 @@ def _config_from_args(args: argparse.Namespace, demo: bool = False) -> Config:
         max_targets=getattr(args, "max_targets", 12),
         interactive=getattr(args, "interactive", False),
         demo=demo or getattr(args, "demo", False),
+        home=getattr(args, "home", "") or "",
+        archive=not getattr(args, "no_archive", False),
     )
 
 
@@ -125,6 +146,12 @@ def _print_result(result: PipelineResult, quiet: bool = False) -> None:
     tweak = result.artifacts.get("ellekit_tweak")
     if tweak:
         print(f"  ellekit:  {os.path.abspath(tweak)}")
+    archived = result.artifacts.get("archived_report_dir")
+    if archived:
+        print(f"  archived: {os.path.abspath(archived)}")
+    from .storage import resolve_home
+
+    print(f"  home:     {resolve_home(result.config.home)}")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -192,6 +219,66 @@ def main(argv: Optional[List[str]] = None) -> int:
     if command == "hook-scaffold":
         path = generate_tweak(args.workdir)
         print(f"ElleKit tweak 工程已生成: {os.path.abspath(path)}")
+        return 0
+
+    if command == "home":
+        from .storage import Home
+
+        store = Home(getattr(args, "home", "") or "")
+        if args.init:
+            store.ensure()
+            print(f"长期存储目录已初始化: {store.path}")
+        if args.json:
+            print(json.dumps({
+                "path": store.path,
+                "exists": store.exists(),
+                "subdirs": {n: store.subdir(n) for n in
+                            ("collections", "cache", "cache/kexts", "reports", "tweaks", "logs")},
+                "config": store.config_path(),
+            }, indent=2, ensure_ascii=False))
+        else:
+            print(store.layout())
+        return 0
+
+    if command == "import":
+        from .storage import Home
+
+        store = Home(getattr(args, "home", "") or "")
+        store.ensure()
+        kind = args.kind
+        if kind == "auto":
+            lower = os.path.basename(args.file).lower()
+            if "extract" in lower:
+                kind = "extracted"
+            elif "collection" in lower:
+                kind = "collection"
+            elif "kernelcache" in lower or lower.endswith(".img4"):
+                kind = "kernelcache"
+            elif lower.endswith(".log"):
+                kind = "log"
+            else:
+                kind = "other"
+        try:
+            dest = store.import_file(args.file, kind)
+        except FileNotFoundError:
+            print(f"文件不存在: {args.file}", file=sys.stderr)
+            return 1
+        print(f"已导入 [{kind}]: {dest}")
+        return 0
+
+    if command == "history":
+        from .storage import Home
+
+        store = Home(getattr(args, "home", "") or "")
+        rows = store.history(limit=args.limit)
+        if args.json:
+            print(json.dumps(rows, indent=2, ensure_ascii=False))
+        elif not rows:
+            print(f"尚无归档报告（长期存储: {store.path}）")
+        else:
+            print(f"长期存储: {store.path}")
+            for row in rows:
+                print(f"  {row['name']}: {', '.join(row['files'])}")
         return 0
 
     cfg = _config_from_args(args, demo=(command == "demo"))

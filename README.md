@@ -31,6 +31,8 @@ pip3 install '.[r2]'      # 可选：r2pipe
 
 设备端：用 **Sileo 安装** `packaging/dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb`。它提供 `iosvuln-collect [路径]`，从系统缓存或指定路径采集 kernelcache/kext，并把**设备名、系统版本、Build、架构**写入 `/var/mobile/iosvuln/collection.json`。deb 内附提取式 tweak 源码，需你自己用 Theos 编译——沙箱没有 iOS SDK，**deb 不含已编译 dylib**。
 
+**文档**：[安装指南 docs/INSTALL.md](docs/INSTALL.md) · [使用指南 docs/USAGE.md](docs/USAGE.md)
+
 ## 常用命令
 
 ```bash
@@ -52,6 +54,13 @@ iosvuln run --kext-dir ./exported-kexts --workdir ./out
 iosvuln run --device --device-path /System/Library/Caches/com.apple.kernelcaches/kernelcache
 iosvuln run --kernelcache ./kernelcache.decompressed --min-severity MEDIUM
 iosvuln demo --target all --workdir /tmp/iosvuln-demo
+
+# 长期存储：持久保存采集数据、缓存与历史报告（默认 ~/.iosvuln）
+iosvuln home --init
+iosvuln import ./extracted.json
+iosvuln history
+iosvuln run --home /data/iosvuln --workdir ./out    # 指定长期目录
+iosvuln run --no-archive --workdir ./out            # 关闭自动归档
 ```
 
 `--target` 支持：`all`/`*`（全量，受 `--max-targets` 限制）、`auto`/`catalog`（内置目录中高风险目标）、`1,3,5`（`iosvuln targets` 显示的编号）、任意 bundle id / 名称子串。

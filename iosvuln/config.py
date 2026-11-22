@@ -37,6 +37,8 @@ class Config:
     interactive: bool = False
     demo: bool = False
     keep_artifacts: bool = True
+    home: str = ""                 # persistent store; empty -> ~/.iosvuln or IOSVULN_HOME
+    archive: bool = True           # snapshot reports into the persistent home
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Config":
@@ -45,6 +47,7 @@ class Config:
         if not cfg.workdir:
             cfg.workdir = "iosvuln-out"
         cfg.workdir = os.path.expanduser(os.path.expandvars(cfg.workdir))
+        cfg.home = os.path.expanduser(os.path.expandvars(cfg.home)) if cfg.home else ""
         return cfg
 
     def to_dict(self) -> Dict[str, Any]:

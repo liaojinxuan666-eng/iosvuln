@@ -16,6 +16,16 @@ from iosvuln import static_rules  # noqa: F401
 
 EXAMPLES = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples")
 
+# Isolate the persistent store so tests never write to the real ~/.iosvuln.
+_TEST_HOME = tempfile.mkdtemp(prefix="iosvuln-home-")
+os.environ["IOSVULN_HOME"] = _TEST_HOME
+
+
+def tearDownModule():
+    import shutil
+
+    shutil.rmtree(_TEST_HOME, ignore_errors=True)
+
 
 class KextParsingTests(unittest.TestCase):
     def test_text_output(self):
@@ -199,3 +209,55 @@ class EnvironmentAndTargetTests(unittest.TestCase):
             self.assertIn("## 0. 环境信息", text)
             self.assertIn("## 0.1 可分析目标", text)
 
+
+
+class PersistentHomeTests(unittest.TestCase):
+    def test_home_layout_and_config(self):
+        from iosvuln.storage import Home
+
+        with tempfile.TemporaryDirectory() as root:
+            store = Home(root)
+            path = store.ensure()
+            self.assertTrue(os.path.isfile(store.config_path()))
+            self.assertEqual(path, root)
+            for name in ("collections", "cache", "reports", "tweaks", "logs"):
+                self.assertTrue(os.path.isdir(store.subdir(name)), name)
+            cfg = store.read_config()
+            self.assertEqual(cfg["version"], 1)
+
+    def test_import_and_latest(self):
+        from iosvuln.storage import Home
+
+        with tempfile.TemporaryDirectory() as root:
+            store = Home(root)
+            store.ensure()
+            src = os.path.join(root, "incoming-extracted.json")
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("{}")
+            dest = store.import_file(src, "extracted")
+            self.assertTrue(os.path.exists(dest))
+            self.assertIn("extracted", os.path.basename(dest))
+            self.assertEqual(store.latest("extracted"), dest)
+
+    def test_archive_report(self):
+        from iosvuln.storage import Home
+
+        with tempfile.TemporaryDirectory() as work:
+            report = os.path.join(work, "report.md")
+            with open(report, "w", encoding="utf-8") as fh:
+                fh.write("# demo")
+            with tempfile.TemporaryDirectory() as root:
+                store = Home(root)
+                saved = store.archive_report({"markdown": report}, "IOSurface")
+                self.assertTrue(os.path.exists(saved["markdown"]))
+                history = store.history()
+                self.assertEqual(len(history), 1)
+                self.assertIn("IOSurface", history[0]["name"])
+
+    def test_pipeline_archives_into_home(self):
+        with tempfile.TemporaryDirectory() as work, tempfile.TemporaryDirectory() as home:
+            cfg = Config(workdir=work, demo=True, home=home, archive=True)
+            result = Pipeline(cfg).run()
+            archived = result.artifacts.get("archived_report_dir", "")
+            self.assertTrue(os.path.isdir(archived), archived)
+            self.assertTrue(os.path.exists(os.path.join(archived, "report.md")))

@@ -18,6 +18,7 @@ from .r2_backend import R2Backend
 from . import static_rules  # noqa: F401 - registers static plugins
 from .report import write_reports
 from .targets import Target, discover as discover_targets, select as select_targets
+from .storage import Home
 
 EXAMPLES_DIR = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples"
@@ -61,6 +62,13 @@ class Pipeline:
         self.warnings: List[str] = []
         self.device = gather_device(cfg, self.dep)
         os.makedirs(cfg.workdir, exist_ok=True)
+        self.home = Home(cfg.home)
+        # Only materialize the persistent store when archiving is enabled.
+        if cfg.archive:
+            try:
+                self.home.ensure()
+            except OSError as exc:
+                self.warnings.append(f"无法初始化长期存储目录 {self.home.path}: {exc}")
 
     # ------------------------------------------------------------------ helpers
     def _fixture(self, name: str) -> str:
@@ -79,9 +87,15 @@ class Pipeline:
     def _load_observations(self) -> List[Any]:
         if self.cfg.observations:
             return load_observations(self.cfg.observations)
-        extracted = load_extracted(os.path.join(self.cfg.workdir, "extracted.json"))
-        if extracted:
-            return extracted
+        # Search workdir first, then the persistent home's imported collections.
+        for candidate in (
+            os.path.join(self.cfg.workdir, "extracted.json"),
+            self.home.latest("extracted") if self.cfg.archive else "",
+        ):
+            if candidate and os.path.exists(candidate):
+                extracted = load_extracted(candidate)
+                if extracted:
+                    return extracted
         return load_observations(self._fixture("observations_demo.log"))
 
     def _choose_targets(self, kexts: Sequence[Kext], macho_files: Sequence[str]) -> List[Target]:
@@ -229,10 +243,27 @@ class Pipeline:
             "r2": self.dep.get("r2") or ("r2pipe" if self.dep.get("r2pipe") else "missing"),
             "warnings": list(dict.fromkeys(self.warnings)),
             "observations": len(observations),
+            "home": self.home.path if self.cfg.archive else "",
+            "archived": self.cfg.archive,
         }
         reports = write_reports(self.cfg.workdir, findings, kexts, meta)
         artifacts.update(reports)
         artifacts["manifest"] = os.path.join(self.cfg.workdir, "manifest.json")
+        # Snapshot into the persistent home so results survive beyond the workdir.
+        if self.cfg.archive:
+            label = "-".join(t.name or t.bundle_id for t in selected)[:48] or "run"
+            try:
+                archived = self.home.archive_report(reports, label)
+                if archived:
+                    artifacts["archived_report_dir"] = os.path.dirname(
+                        archived[next(iter(archived))]
+                    )
+                tweak_src = artifacts.get("ellekit_tweak", "")
+                saved_tweak = self.home.save_tweak(tweak_src)
+                if saved_tweak:
+                    artifacts["archived_tweak"] = saved_tweak
+            except OSError as exc:
+                self.warnings.append(f"归档到长期存储失败: {exc}")
         manifest_payload = (
             [m.to_dict() for m in manifests] if len(manifests) != 1
             else manifests[0].to_json() if manifests else "[]"

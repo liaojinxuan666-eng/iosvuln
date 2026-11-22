@@ -53,6 +53,7 @@ def render_markdown(
         f"| 内核 | {env.get('kernel') or '-'} |",
         f"| 信息来源 | {env.get('source') or '-'} |",
         f"| 版本推断 | major={profile.get('major_version', '-')}, PAC={profile.get('pointer_authentication')} |",
+        f"| 长期存储 | {meta.get('home') or '-'} ({'已归档' if meta.get('archived') else '未归档'}) |",
         "",
     ]
 
