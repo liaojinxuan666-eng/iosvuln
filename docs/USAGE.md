@@ -432,7 +432,7 @@ iosvuln home --home /data/iosvuln --init
 
 **关闭自动归档**：给 `run` / `demo` 加 `--no-archive`，报告只写 `--workdir`，不进长期存储。
 
-> 设备端对应目录是 `/var/mobile/iosvuln/`（由采集器写入），与电脑端相互独立。
+> 设备端对应目录是 `/var/mobile/iosvuln/`。装了 `analyze` deb 后，手机端分析器会自动把 home 指向这里，与采集器、提取式 tweak **共用同一份完整目录、数据互通**；电脑端与手机端各自独立。详见 [INSTALL.md 的手机端分析端章节](INSTALL.md)。
 
 ---
 

@@ -49,6 +49,9 @@ jobs:
       - name: Build collector deb
         run: bash packaging/build_deb.sh
 
+      - name: Build on-device analyzer deb
+        run: bash packaging/build_analyze_deb.sh
+
       - name: Package analysis tool source
         run: |
           mkdir -p release

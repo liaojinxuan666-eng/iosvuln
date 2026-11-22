@@ -29,7 +29,15 @@ pip3 install -e .
 pip3 install '.[r2]'      # 可选：r2pipe
 ```
 
-设备端：用 **Sileo 安装** `packaging/dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb`。它提供 `iosvuln-collect [路径]`，从系统缓存或指定路径采集 kernelcache/kext，并把**设备名、系统版本、Build、架构**写入 `/var/mobile/iosvuln/collection.json`。deb 内附提取式 tweak 源码，需你自己用 Theos 编译——沙箱没有 iOS SDK，**deb 不含已编译 dylib**。
+设备端（Sileo 安装，三个 deb）：
+
+| deb | 作用 |
+| --- | --- |
+| `dev.iosvuln.analyze_0.1.1_iphoneos-arm64.deb` | **完整分析端**：整套 Python 引擎 + `iosvuln` 命令，手机本地即可跑全部分析 |
+| `dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb` | 采集器 `iosvuln-collect [路径]`，采集 kernelcache/kext + 设备信息 |
+| `dev.iosvuln.extract_0.1.1_iphoneos-arm64.deb` | 提取式 tweak（已编译 dylib），导出 `IOSurface.framework` 符号地址与机器码 |
+
+三者共用长期目录 `/var/mobile/iosvuln/`（collections/cache/reports/tweaks/logs/config.json），数据互通。手机端分析需 Sileo 装 `python3`；真实反汇编需 `radare2`（缺失时自动降级 DEMO）。
 
 **文档**：[安装指南 docs/INSTALL.md](docs/INSTALL.md) · [使用指南 docs/USAGE.md](docs/USAGE.md)
 

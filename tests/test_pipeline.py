@@ -261,3 +261,48 @@ class PersistentHomeTests(unittest.TestCase):
             archived = result.artifacts.get("archived_report_dir", "")
             self.assertTrue(os.path.isdir(archived), archived)
             self.assertTrue(os.path.exists(os.path.join(archived, "report.md")))
+
+
+class MobileAnalyzerTests(unittest.TestCase):
+    def test_ios_default_home(self):
+        import importlib
+        from iosvuln import storage
+
+        backup = dict(os.environ)
+        try:
+            os.environ["IOSVULN_FORCE_IOS"] = "1"
+            os.environ.pop("IOSVULN_HOME", None)
+            self.assertTrue(storage.is_ios())
+            self.assertEqual(storage.default_home(), "/var/mobile/iosvuln")
+            self.assertEqual(storage.resolve_home(), "/var/mobile/iosvuln")
+        finally:
+            os.environ.clear()
+            os.environ.update(backup)
+            importlib.reload(storage)
+
+    def test_host_default_home(self):
+        from iosvuln import storage
+
+        backup = dict(os.environ)
+        try:
+            os.environ["IOSVULN_FORCE_HOST"] = "1"
+            os.environ.pop("IOSVULN_HOME", None)
+            os.environ.pop("IOSVULN_FORCE_IOS", None)
+            self.assertFalse(storage.is_ios())
+            self.assertEqual(storage.default_home(), "~/.iosvuln")
+            self.assertTrue(storage.resolve_home().endswith(".iosvuln"))
+        finally:
+            os.environ.clear()
+            os.environ.update(backup)
+
+    def test_analyze_deb_has_full_engine(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        deb = os.path.join(root, "packaging", "dev.iosvuln.analyze_0.1.1_iphoneos-arm64.deb")
+        if not os.path.exists(deb):
+            self.skipTest("analyze deb not built in this environment")
+        import subprocess
+
+        listing = subprocess.check_output(["dpkg-deb", "-c", deb], text=True)
+        for needle in ("./usr/bin/iosvuln", "./usr/lib/iosvuln/iosvuln/cli.py",
+                       "./usr/lib/iosvuln/iosvuln/storage.py", "./usr/lib/iosvuln/examples/"):
+            self.assertIn(needle, listing)

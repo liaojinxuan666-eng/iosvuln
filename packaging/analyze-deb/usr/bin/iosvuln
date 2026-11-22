@@ -1,0 +1,38 @@
+#!/bin/bash
+# iosvuln full analyzer launcher for jailbroken iOS (rootless / rootful).
+# Runs the complete Python analysis engine on-device. The persistent store is
+# shared with the collector at /var/mobile/iosvuln (all subdirs present).
+
+set -e
+
+# Locate the installed Python package (rootless remaps /usr to /var/jb/usr).
+PKG_DIR=""
+for candidate in /usr/lib/iosvuln /var/jb/usr/lib/iosvuln; do
+  if [ -d "$candidate/iosvuln" ]; then
+    PKG_DIR="$candidate"
+    break
+  fi
+done
+if [ -z "$PKG_DIR" ]; then
+  echo "iosvuln: Python package not found under /usr/lib/iosvuln" >&2
+  exit 1
+fi
+
+export PYTHONPATH="$PKG_DIR${PYTHONPATH:+:$PYTHONPATH}"
+# Persistent store on device; user override always wins.
+export IOSVULN_HOME="${IOSVULN_HOME:-/var/mobile/iosvuln}"
+
+# python3 comes from Sileo (e.g. the 'python3' package). Try common names.
+PY=""
+for name in python3 python3.11 python3.10 python; do
+  if command -v "$name" >/dev/null 2>&1; then
+    PY="$(command -v "$name")"
+    break
+  fi
+done
+if [ -z "$PY" ]; then
+  echo "iosvuln: python3 not found. Install 'python3' from Sileo first." >&2
+  exit 1
+fi
+
+exec "$PY" -m iosvuln.cli "$@"

@@ -1,0 +1,20 @@
+#!/bin/bash
+set -e
+
+# Launcher + Python package live under /usr/lib/iosvuln (rootless: /var/jb/usr/lib/iosvuln)
+chmod 0755 /usr/bin/iosvuln 2>/dev/null || true
+
+# Initialize the COMPLETE persistent store with the exact same layout as the
+# host tool. Reuse the tool itself so the structure never drifts.
+export PYTHONPATH="/usr/lib/iosvuln${PYTHONPATH:+:$PYTHONPATH}"
+if command -v python3 >/dev/null 2>&1; then
+  python3 -m iosvuln.cli home --init >/dev/null 2>&1 || true
+else
+  # Fallback: create every subdir by hand if python3 is not yet available.
+  BASE=/var/mobile/iosvuln
+  mkdir -p "$BASE/collections" "$BASE/cache/kexts" "$BASE/reports" \
+           "$BASE/tweaks" "$BASE/logs"
+fi
+
+chown -R mobile:mobile /var/mobile/iosvuln 2>/dev/null || true
+exit 0

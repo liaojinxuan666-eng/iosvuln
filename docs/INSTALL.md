@@ -91,21 +91,61 @@ python3 -m pip uninstall iosvuln
 
 ### 2. 下载 deb
 
-到 [Releases](https://github.com/liaojinxuan666-eng/iosvuln/releases) 下载两个文件：
+到 [Releases](https://github.com/liaojinxuan666-eng/iosvuln/releases) 下载，共三个 deb：
 
 | 文件 | 作用 | 是否必须 |
 | --- | --- | --- |
-| `dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb` | 设备侧采集器 `iosvuln-collect` | 必须 |
-| `dev.iosvuln.extract_0.1.1_iphoneos-arm64.deb` | 提取式 tweak（已编译 dylib） | 想导出符号地址时装 |
+| `dev.iosvuln.analyze_0.1.1_iphoneos-arm64.deb` | **完整分析端**：把整套 Python 引擎装到手机，提供 `iosvuln` 命令 | 想在手机上直接分析时装 |
+| `dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb` | 设备侧采集器 `iosvuln-collect` | 采集内核数据时装 |
+| `dev.iosvuln.extract_0.1.1_iphoneos-arm64.deb` | 提取式 tweak（已编译 dylib），导出符号地址与机器码 | 想导出符号地址时装 |
+
+> **`analyze` 是完整分析端**：装了它，iPhone 自己就能跑 `iosvuln run / demo / home / import / history` 等全部命令，不用再依赖电脑。它和 `collect`、`extract` 共用同一个长期目录 `/var/mobile/iosvuln/`，三者数据互通。
 
 ### 3. 用 Sileo 安装
 
 1. 打开 Sileo → 底部「Sources」→ 右上「Edit」→ 「Add Source」可跳过（这里用本地包）。
 2. Sileo → 右上搜索/菜单 → 「Install Local File」/「安装本地文件」。
-3. 选中下载的两个 deb，确认安装。
+3. 选中下载的 deb（可一次选多个），确认安装。
 4. 安装完成后**重启 SpringBoard** 或重启设备，让 tweak 注入生效。
+5. 若装了 `analyze`，**先装 Python 3**：Sileo 搜索并安装 `python3`（依赖已声明，通常会自动提示）。
 
-> 两个包都是 rootless 布局，文件落在 `/var/jb/...`。采集器命令 `iosvuln-collect` 已加入 PATH。
+> 三个包都是 rootless 布局，文件落在 `/var/jb/...`。`iosvuln` 与 `iosvuln-collect` 命令均已加入 PATH。
+
+### 3.1 手机端完整分析端（analyze）
+
+装好 `analyze` + `python3` 后，SSH 进手机即可跑**完整分析端**，用法与电脑端完全一致：
+
+```bash
+ssh root@localhost
+
+iosvuln --version
+iosvuln deps                    # 检查 python / r2；没有 r2 也能跑 demo
+iosvuln home                    # 查看长期目录（自动指向 /var/mobile/iosvuln）
+iosvuln demo --workdir /var/mobile/iosvuln-demo   # 无需网络，用内置数据跑通全流程
+iosvuln info
+iosvuln targets --kernelcache /path/to/kernelcache
+iosvuln run --kernelcache /var/mobile/iosvuln/kernelcache \
+            --target com.apple.driver.IOSurface \
+            --workdir /var/mobile/iosvuln-run
+iosvuln import /var/mobile/iosvuln/extracted.json
+iosvuln history
+```
+
+**手机端长期目录**（安装时 `postinst` 自动建好，与电脑端结构一个不少）：
+
+```
+/var/mobile/iosvuln/
+├── collections/     # 导入的 collection.json / extracted.json
+├── cache/           # kernelcache / kext 缓存（含 kexts/ 子目录）
+├── reports/         # 每次分析的历史报告快照
+├── tweaks/          # 最近生成的 ElleKit 工程
+├── logs/            # 会话日志
+└── config.json      # 默认配置
+```
+
+手机端会自动把 home 指向 `/var/mobile/iosvuln`（由 `storage.py` 的 iOS 检测决定），因此分析端、采集器、提取式 tweak 三方数据落在同一处、自动互通。也可用 `IOSVULN_HOME` 覆盖。
+
+**能力边界**：手机上没有 `ipsw`（Go 二进制，iOS 不适用）。真实反汇编需要 Sileo 装 `radare2`；没装时会自动降级到 DEMO 合成数据。所以手机端最实用的组合是：`collect` 采数据 → 手机上 `iosvuln demo` 验证流程，或装了 radare2 后 `iosvuln run --kernelcache ...` 做真实分析；full IPSW 提取流程仍建议在电脑端做。
 
 ### 4. 验证安装
 
@@ -150,6 +190,7 @@ Sileo → Installed → 找到对应包 → Remove；或用命令：
 ```bash
 dpkg -r dev.iosvuln.collect
 dpkg -r dev.iosvuln.extract
+dpkg -r dev.iosvuln.analyze
 ```
 
 长期数据需手动删除：

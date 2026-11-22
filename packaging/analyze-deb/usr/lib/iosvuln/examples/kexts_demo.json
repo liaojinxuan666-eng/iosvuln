@@ -1,0 +1,8 @@
+[
+  {"bundle_id": "com.apple.driver.IOSurface", "name": "IOSurface", "version": "1.0.0", "path": "/System/Library/Extensions/IOSurface.kext", "size": 483328},
+  {"bundle_id": "com.apple.driver.AppleMobileFileIntegrity", "name": "AppleMobileFileIntegrity", "version": "1.0.0", "path": "", "size": 212992},
+  {"bundle_id": "com.apple.driver.IOPlatformPluginFamily", "name": "IOPlatformPluginFamily", "version": "1.0.0", "path": "", "size": 164864},
+  {"bundle_id": "com.apple.security.sandbox", "name": "sandbox", "version": "1.0.0", "path": "", "size": 391168},
+  {"bundle_id": "com.apple.driver.AppleHeapAllocators", "name": "AppleHeapAllocators", "version": "1.0.0", "path": "", "size": 65536},
+  {"bundle_id": "com.apple.kernel.mach", "name": "mach", "version": "1.0.0", "path": "", "size": 815104}
+]

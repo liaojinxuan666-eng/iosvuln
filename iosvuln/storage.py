@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -53,9 +54,38 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 }
 
 
+def is_ios() -> bool:
+    """Best-effort detection of an iOS/iPadOS device (including rootless)."""
+    if os.environ.get("IOSVULN_FORCE_IOS"):
+        return True
+    if os.environ.get("IOSVULN_FORCE_HOST"):
+        return False
+    # iOS Python builds report 'darwin' but lack AppKit paths present on macOS.
+    if sys.platform != "darwin":
+        return False
+    if os.path.isdir("/var/jb"):          # rootless jailbreak prefix
+        return True
+    if os.path.isdir("/private/var/mobile") and not os.path.isdir("/System/Library/Frameworks/AppKit.framework"):
+        return True
+    return os.path.isfile("/var/mobile/.iosvuln-device")
+
+
+def default_home() -> str:
+    """Platform-aware default: device path on iOS, home dir on the host."""
+    return DEVICE_HOME if is_ios() else DEFAULT_HOME
+
+
 def resolve_home(home: str = "") -> str:
-    """Resolve the home path from an explicit value, env var, or default."""
-    raw = home or os.environ.get("IOSVULN_HOME") or DEFAULT_HOME
+    """Resolve the home path from an explicit value, env var, or default.
+
+    On iOS the default is the on-device collector directory so the analyzer,
+    collector and extracted hook data all share one complete persistent store.
+    """
+    raw = (
+        home
+        or os.environ.get("IOSVULN_HOME")
+        or (DEVICE_HOME if is_ios() else DEFAULT_HOME)
+    )
     return os.path.abspath(os.path.expanduser(os.path.expandvars(raw)))
 
 
