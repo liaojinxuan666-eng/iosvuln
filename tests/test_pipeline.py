@@ -481,3 +481,46 @@ class PacDeviceProfileTests(unittest.TestCase):
         self.assertTrue(p["is_arm64e"])
         self.assertTrue(p["pointer_authentication"])
         self.assertEqual(p["pac_scheme"], "arm64e-pac")
+
+
+class OneShotScanTests(unittest.TestCase):
+    def _args(self, **kw):
+        from argparse import Namespace
+
+        base = dict(
+            source_preset="auto", full=False, all_plugins=False, preset="",
+            target=None, plugin=None, demo=False, max_targets=12,
+        )
+        base.update(kw)
+        return Namespace(**base)
+
+    def test_demo_preset(self):
+        from iosvuln.cli import _apply_scan_preset
+
+        cmd = _apply_scan_preset(self._args(source_preset="demo"))
+        self.assertEqual(cmd, "demo")
+
+    def test_full_sets_all_targets_and_plugins(self):
+        from iosvuln.cli import _apply_scan_preset
+        from iosvuln.plugins import list_plugins
+
+        args = self._args(full=True)
+        cmd = _apply_scan_preset(args)
+        self.assertEqual(cmd, "run")
+        self.assertEqual(args.target, ["all"])
+        self.assertEqual(args.max_targets, 40)
+        self.assertEqual(set(args.plugin), set(list_plugins()))
+
+    def test_pac_preset_limits_plugins(self):
+        from iosvuln.cli import _apply_scan_preset
+
+        args = self._args(preset="pac")
+        _apply_scan_preset(args)
+        self.assertEqual(set(args.plugin), {"pac-security", "pointer-safety", "apple-silicon"})
+
+    def test_auto_defaults_to_auto_targets(self):
+        from iosvuln.cli import _apply_scan_preset
+
+        args = self._args()
+        _apply_scan_preset(args)
+        self.assertEqual(args.target, ["auto"])

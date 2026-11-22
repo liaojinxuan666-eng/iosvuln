@@ -158,12 +158,16 @@ iosvuln history
 **zsh 快捷命令**：`analyze` deb 安装时会自动向 `~/.zshrc` 写入一行 source，NewTerm 重开后即可用短命令：
 
 ```
-iv   = iosvuln        ivs  = 扫描当前目录       ivd = demo        ivi = info
-ivt  = targets        ivh  = home               ivim = import     ivl = history
-ivk <kernelcache>     = 直接扫描指定内核        ivall = 采集+扫描一条龙
+iv                    = 无参数直接一站式扫描（auto）
+ivs   = scan          ivf  = scan --full        ivd  = scan --from demo
+ivz   = scan --preset fast                      ivp  = scan --preset pac
+ivx   = scan --preset deep --full               ivi  = info
+ivt   = targets       ivh  = home               ivim = import     ivl = history
+ivk <kernelcache>     = 扫描指定内核            ivipsw <file> = 扫描 IPSW
+ivall                 = 采集+扫描一条龙
 ```
 
-例如手机上一条命令扫描内核：`ivk /var/mobile/iosvuln/kernelcache`，进度条会实时显示已找到的疑似漏洞数。
+例如手机上一条命令扫描内核：`ivk /var/mobile/iosvuln/kernelcache`，或 `ivf` 全量扫描、`iv` 自动扫描。进度条会实时显示已找到的疑似漏洞数，完成后报告自动归档到 `/var/mobile/iosvuln/reports/`。
 
 ### 4. 验证安装
 

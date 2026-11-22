@@ -75,6 +75,83 @@ BOUND_TOKENS = (
     "checklength", "verify", "inbounds", "range_check", "safecast",
 )
 
+# --- logic-flaw vocabulary ----------------------------------------------------
+# Calls that RETURN a kern_return_t / IOReturn or a newly created object whose
+# failure must be checked before use. Kept tight: generic alloc/copy/lock occur
+# in almost every function and would flood the report with low-value noise.
+STATUS_TOKENS = (
+    "copyin", "copyinstr", "creatememorydescriptor", "withaddressrange",
+    "getproperty", "createbuffer", "allocatesurface", "mapmemory",
+    "kern_return", "ioreturn", "getobject",
+)
+# Explicit authorization / status-check calls (presence suppresses the finding).
+CHECK_TOKENS = (
+    "entitled", "entitlement", "hasprivilege", "credential", "kauth",
+    "iscurrenttask", "audit", "accesscheck", "permission", "authorize",
+    "check", "verify", "validate",
+)
+# Privileged capability entry points that must be gated by a permission check.
+PRIV_ENTRY_TOKENS = (
+    "taskforpid", "processor_set_tasks", "host_get_special_port", "host_port",
+    "mach_port", "setuserclient", "externalmethod", "ioexternalmethod",
+    "setproperty", "load", "unload", "k-ext", "sysctl", "_ioctl", "ioctl",
+)
+# Object reference-count lifecycle (logic, distinct from raw free/use).
+REFCOUNT_INC = ("retain", "incrementusecount", "get", "copy", "attach", "open")
+REFCOUNT_DEC = ("release", "decrementusecount", "detach", "close")
+# State / flag manipulation calls.
+STATE_TOKENS = ("setstate", "getstate", "setflag", "clearflag", "isactive", "isready", "reset", "stop", "terminate")
+
+# --- Darwin / XNU internals vocabulary ----------------------------------------
+# Mach IPC / MIG / port rights.
+MACH_IPC_TOKENS = (
+    "machmsg", "machmsgover", "machport", "machportinsert", "machportextract",
+    "ipcport", "ipcspace", "machportset", "machmsgsend", "machmsgrecv",
+    "machkit", "mig", "machrpc", "sendright", "receivright", "portname",
+)
+# Mach voucher / task / thread crossing.
+MACH_TASK_TOKENS = (
+    "taskforpid", "taskname", "mach_task_self", "currenttask", "threadself",
+    "processor_set", "host_port", "host_get_special_port", "voucher",
+    "ippc", "thread_set", "task_set", "mach_vm", "mach_vm_read", "mach_vm_write",
+)
+# IOKit object / memory lifecycle.
+IOKIT_TOKENS = (
+    "ioservice", "ioconnect", "ioexternalmethod", "iomemorydescriptor",
+    "iobufmemorydescriptor", "iokit", "ioregistry", "property", "osobject",
+    "osdictionary", "osarray", "osdata", "osstring", "osnumber", "withaddressrange",
+    "createbuffer", "mapmemory", "getaddressrange", "prepare", "complete",
+)
+# Entitlement / AMFI / code-signing checks.
+AMFI_TOKENS = (
+    "amfi", "entitlement", "entitled", "codesign", "csops", "cs_validate",
+    "provisioning", "task_for_pid_check", "platformbinary", "hardenedruntime",
+    "libraryvalidation", "hotdebug", "get-task-allow",
+)
+# vnode / filesystem / MACF (sandbox) surface.
+VNODE_MACF_TOKENS = (
+    "vnode", "vnodeget", "vn_getpath", "vnode_lookup", "mount", "unmount",
+    "mac_vnode", "mac_mount", "mac_cred", "sandbox", "sandbox_check",
+    "fileprovider", "namecache", "pathconf", "open", "read", "write",
+)
+
+# --- Apple Silicon hardware protections --------------------------------------
+# KTRR/CTRR kernel text & constant-region protection.
+KTRR_TOKENS = (
+    "ktrr", "ctrr", "kernel_text", "text_region", "constant_region",
+    "protect_memory", "vm_protect", "ptov", "vtophys", "phystokv",
+)
+# PPL (Protected Page Layer) / SKC (System Key Compartment).
+PPL_TOKENS = (
+    "ppl", "protectedpage", "ppl_page", "skc", "systemkey", "keybag",
+    "managedpage", "physical_write", "cpu_window",
+)
+# Secure Enclave / SEP / secure boot chain.
+SEP_TOKENS = (
+    "sep", "secureenclave", "sepos", "secureboot", "bootchain", "img4",
+    "tss", "apnonce", "sepnonce", "effaceable", "keybag", "aescbc",
+)
+
 
 def _norm(value: str) -> str:
     value = value.lower().replace("sym.imp.", "").replace("imp.", "")
@@ -879,4 +956,374 @@ class AdvancedThreatsPlugin(_RulePlugin):
             symbol=symbol,
             recommendation="复核参数来源、边界与生命周期；本报告仅标注审计位置，不生成利用代码。",
             tags=[vuln_class],
+        )
+
+
+@register
+class LogicFlawsPlugin(_RulePlugin):
+    name = "logic-flaws"
+    description = "逻辑缺陷：权限校验缺失 / 引用计数失衡 / 状态机竞态 / 返回码忽略 / 长度字段不一致"
+
+    @staticmethod
+    def _seq(sites: Sequence[CallSite]) -> List[Tuple[str, CallSite]]:
+        """Map each call site to its matched logic token (ordered)."""
+        out: List[Tuple[str, CallSite]] = []
+        for site in sites:
+            tok = _norm(site.target) or _norm(site.mnemonic)
+            for fam, tokens in (
+                ("priv", PRIV_ENTRY_TOKENS), ("check", CHECK_TOKENS),
+                ("inc", REFCOUNT_INC), ("dec", REFCOUNT_DEC),
+                ("state", STATE_TOKENS), ("status", STATUS_TOKENS),
+            ):
+                if any(t in tok for t in tokens):
+                    out.append((fam, site))
+                    break
+        return out
+
+    def _scan(self, manifest: AnalysisManifest) -> List[Finding]:
+        findings: List[Finding] = []
+        for fn in manifest.functions:
+            calls = list(fn.calls)
+            norm_fn = _norm(fn.name)
+            seq = self._seq(fn.call_sites)
+            seq_tokens = {fam for fam, _ in seq}
+            strings_lower = " ".join(fn.strings).lower()
+
+            # 1) privileged entry (task_for_pid / external method / sysctl) with
+            #    no authorization/entitlement check anywhere in the function.
+            priv = _hits(calls, PRIV_ENTRY_TOKENS)
+            checks = _hits(calls, CHECK_TOKENS)
+            if priv and not checks:
+                findings.append(self._make(
+                    manifest, fn, "PRIVILEGE_ESCALATION",
+                    f"特权入口缺少授权检查：{', '.join(priv)}",
+                    "函数命中特权/外部方法入口，但同一函数内未见 entitlement、credential、"
+                    "kauth 或返回值校验等授权信号；若该入口可由用户态直接触达，"
+                    "可能构成权限检查缺失。需人工确认调用者身份校验是否在调用方完成。",
+                    _assembly(fn, list(priv)),
+                    70.0, 0.55, "missing-authorization",
+                    "CWE-862 Missing Authorization",
+                ))
+
+            # 2) status-returning API called but no success/error check token,
+            #    and the function is complex enough that an unchecked path is
+            #    plausible. (strings often carry 'error'/'failed' labels.)
+            status = _hits(calls, STATUS_TOKENS)
+            check_kw = any(
+                w in strings_lower for w in ("error", "failed", "success", "result", "kr", "ret")
+            ) or "check" in seq_tokens
+            if status and not check_kw and fn.complexity >= 8:
+                findings.append(self._make(
+                    manifest, fn, "OTHER",
+                    f"状态返回调用后未见校验：{', '.join(status[:4])}",
+                    "函数调用了可能返回错误码的 API（分配/拷贝/映射/获取对象），"
+                    "但函数内未见错误码/成功标志的校验信号，且控制流较复杂；"
+                    "若失败返回值被继续当作有效对象/指针使用，会导致空指针或逻辑绕过。",
+                    _assembly(fn, list(status)),
+                    52.0, 0.42, "unchecked-status",
+                    "CWE-252 Unchecked Return Value",
+                ))
+
+            # 3) reference-count imbalance: increments and decrements unequal.
+            inc = _hits(calls, REFCOUNT_INC)
+            dec = _hits(calls, REFCOUNT_DEC)
+            if inc and dec and len(inc) != len(dec):
+                kind = "泄露(retain>release)" if len(inc) > len(dec) else "过度释放(release>retain)"
+                findings.append(self._make(
+                    manifest, fn, "UAF" if len(inc) < len(dec) else "OTHER",
+                    f"引用计数不平衡：{kind}",
+                    f"函数内引用增加 {len(inc)} 次、减少 {len(dec)} 次；"
+                    "不平衡会导致对象泄漏或提前释放（后续访问即 UAF）。"
+                    "需沿所有分支确认成对出现。",
+                    _assembly(fn, list(inc) + list(dec)),
+                    60.0, 0.5, "refcount-imbalance",
+                    "CWE-772 Missing Release of Resource",
+                ))
+
+            # 4) state-machine operation without a locking primitive anywhere
+            #    in the function -> classic check-then-act state race.
+            states = _hits(calls, STATE_TOKENS)
+            has_lock = bool(_hits(calls, LOCK_TOKENS))
+            if states and not has_lock and fn.complexity >= 6:
+                findings.append(self._make(
+                    manifest, fn, "TOCTOU",
+                    f"状态机操作缺少同步：{', '.join(states)}",
+                    "函数读写对象状态/标志位但未见加锁原语，若状态可由多线程/用户态并发改变，"
+                    "存在检查-使用竞态（TOCTOU）。需确认调用方是否持有锁或状态是否为原子。",
+                    _assembly(fn, list(states)),
+                    56.0, 0.45, "state-race",
+                    "CWE-362 Concurrent Execution using Shared Resource",
+                ))
+
+            # 5) multiple inconsistent length fields with no consistency check.
+            length_fields = [s for s in fn.strings
+                             if any(w in s.lower() for w in ("size", "length", "width", "height", "offset", "count"))]
+            if len(length_fields) >= 3 and not _hits(calls, BOUND_TOKENS):
+                findings.append(self._make(
+                    manifest, fn, "INTEGER_OVERFLOW",
+                    f"多个长度字段缺少一致性与上界校验（{len(length_fields)} 个）",
+                    "函数引用多个尺寸/偏移字段（如 width/height/bytesPerRow），但未见边界或一致性校验；"
+                    "若字段间关系可被用户态控制，乘法/加法可能溢出导致错误分配与拷贝。",
+                    [s.render() for s in fn.call_sites[:6]] or [f"{fn.name}: {length_fields[:4]}"],
+                    54.0, 0.45, "length-consistency",
+                    "CWE-190 Integer Overflow or Wraparound",
+                ))
+        return findings
+
+    def _make(
+        self, manifest: AnalysisManifest, fn: Function, vuln_class: str,
+        title: str, description: str, assembly: List[str], score: float,
+        confidence: float, symbol: str, cwe: str,
+    ) -> Finding:
+        if any(h in _norm(fn.name) for h in SURFACE_FN_HINTS):
+            score += 6.0
+        return Finding(
+            id=_id(self.name, manifest, fn, f"{vuln_class}:{title}"),
+            title=f"[{vuln_class}] {title}",
+            severity=Severity.from_score(score),
+            layer=Layer.STATIC,
+            target=manifest.target,
+            description=description,
+            location=f"{fn.name} @ {fn.address}" if fn.address else fn.name,
+            evidence=assembly,
+            assembly=assembly,
+            score=round(score, 1),
+            confidence=confidence,
+            cwe=cwe,
+            vuln_class=vuln_class,
+            symbol=symbol,
+            recommendation="沿所有控制流分支复核权限校验、返回码、引用计数与状态同步；本报告不生成利用代码。",
+            tags=[vuln_class, "logic"],
+        )
+
+
+@register
+class DarwinInternalsPlugin(_RulePlugin):
+    name = "darwin-internals"
+    description = "Darwin/XNU 特有面：Mach IPC 端口权限 / IOKit 对象生命周期 / 权限与 AMFI / vnode-MACF"
+
+    def _scan(self, manifest: AnalysisManifest) -> List[Finding]:
+        findings: List[Finding] = []
+        imports = set(manifest.imports or [])
+        for fn in manifest.functions:
+            calls = list(fn.calls)
+            names = calls + [_norm(s) for s in fn.strings]
+            norm_fn = _norm(fn.name)
+
+            # 1) user-facing Mach IPC endpoint with port-rights handling but no
+            #    credential/entitlement check -> port rights can be abused.
+            ipc = _hits(names, MACH_IPC_TOKENS)
+            tasks = _hits(names, MACH_TASK_TOKENS)
+            amfi = _hits(names, AMFI_TOKENS)
+            if ipc and tasks and not amfi:
+                findings.append(self._make(
+                    manifest, fn, "SANDBOX_ESCAPE",
+                    f"Mach IPC 跨任务面缺少 entitlement 校验：{', '.join((ipc + tasks)[:4])}",
+                    "函数同时命中 Mach 消息/端口与跨任务(task/host/vm)能力，但未见 AMFI/entitlement "
+                    "校验；Mach port right 若被未授权进程获取，可构造跨进程内存读写与提权原语。"
+                    "需确认端口权限与调用者凭证校验是否在 MIG 层完成。",
+                    _assembly(fn, list(ipc) + list(tasks)),
+                    72.0, 0.55, "mach-ipc-boundary",
+                    "CWE-693 Protection Mechanism Failure",
+                ))
+
+            # 2) task_for_pid / host_get_special_port with no AMFI gate.
+            priv = _hits(names, (
+                "taskforpid", "host_get_special_port", "processor_set_tasks",
+            ))
+            if priv and not amfi:
+                findings.append(self._make(
+                    manifest, fn, "PRIVILEGE_ESCALATION",
+                    f"task_for_pid/host port 缺少 AMFI 校验：{', '.join(priv)}",
+                    "命中 task_for_pid 或 host special port 等 Darwin 经典提权入口，"
+                    "未见 get-task-allow / entitlement 校验；此类入口在缺少权限检查时可直接"
+                    "获取其他进程 task port。需人工确认调用者权限与系统策略检查。",
+                    _assembly(fn, list(priv)),
+                    76.0, 0.55, "task-port",
+                    "CWE-269 Improper Privilege Management",
+                ))
+
+            # 3) IOKit object memory lifecycle: map/prepare/address-range with
+            #    no complete/free -> descriptor leak or UAF on the mapped pages.
+            iokit = _hits(calls, IOKIT_TOKENS)
+            lifecycle = _hits(calls, ("prepare", "complete", "mapmemory", "withaddressrange"))
+            if len(lifecycle) == 1 and iokit:
+                findings.append(self._make(
+                    manifest, fn, "UAF",
+                    f"IOKit 内存描述符生命周期不完整：{', '.join(lifecycle)}",
+                    "函数命中 IOMemoryDescriptor 的 prepare/map 或 withAddressRange，"
+                    "但未见配对的 complete/release；映射页可能在使用后仍被访问(UAF)或泄漏。"
+                    "需沿错误分支确认配对。",
+                    _assembly(fn, list(lifecycle)),
+                    60.0, 0.48, "iomem-lifecycle",
+                    "CWE-404 Improper Resource Shutdown or Release",
+                ))
+
+            # 4) vnode / MACF / sandbox surface: filesystem ops with user data
+            #    but no sandbox_check / mac policy hook.
+            vnode = _hits(names, VNODE_MACF_TOKENS)
+            if vnode and ("vnode" in " ".join(vnode) or "mount" in " ".join(vnode)):
+                has_macf = bool(_hits(calls, ("mac_vnode", "mac_mount", "sandbox_check", "mac_cred")))
+                if not has_macf:
+                    findings.append(self._make(
+                        manifest, fn, "SANDBOX_ESCAPE",
+                        f"vnode/挂载操作未见 MACF 策略检查：{', '.join(vnode[:4])}",
+                        "函数进行 vnode/挂载路径操作，但未见 mac_vnode/mac_mount/sandbox_check "
+                        "等强制访问控制检查；若路径来自用户态且绕过沙盒策略，可能读写受限文件。"
+                        "需确认策略检查是否在 VFS 层之上完成。",
+                        _assembly(fn, list(vnode)),
+                        58.0, 0.45, "vnode-macf",
+                        "CWE-693 Protection Mechanism Failure",
+                    ))
+        return findings
+
+    def _make(
+        self, manifest, fn, vuln_class, title, description, assembly,
+        score, confidence, symbol, cwe,
+    ) -> Finding:
+        if any(h in _norm(fn.name) for h in SURFACE_FN_HINTS):
+            score += 6.0
+        return Finding(
+            id=_id(self.name, manifest, fn, f"{vuln_class}:{title}"),
+            title=f"[{vuln_class}] {title}",
+            severity=Severity.from_score(score),
+            layer=Layer.STATIC,
+            target=manifest.target,
+            description=description,
+            location=f"{fn.name} @ {fn.address}" if fn.address else fn.name,
+            evidence=assembly,
+            assembly=assembly,
+            score=round(score, 1),
+            confidence=confidence,
+            cwe=cwe,
+            vuln_class=vuln_class,
+            symbol=symbol,
+            recommendation="核对 Darwin 权限模型（MACF/entitlement/port right）与对象生命周期；本报告不生成利用代码。",
+            tags=[vuln_class, "darwin", "xnu"],
+        )
+
+
+@register
+class AppleSiliconPlugin(_RulePlugin):
+    name = "apple-silicon"
+    description = "Apple Silicon 硬件保护面：KTRR/CTRR 文本保护 / PPL 页面层 / 物理内存写 / 安全启动链"
+
+    def _scan(self, manifest: AnalysisManifest) -> List[Finding]:
+        findings: List[Finding] = []
+        arch = (manifest.arch or "").lower()
+        if "arm64e" not in arch and "arm64" not in arch:
+            return findings
+
+        all_strings = " ".join(manifest.strings or []).lower()
+        for fn in manifest.functions:
+            calls = list(fn.calls)
+            names = calls + [_norm(s) for s in fn.strings]
+
+            # 1) physical-memory write / mapping primitives. On Apple Silicon
+            #    these are guarded by KTRR (text) and PPL (page table) — any
+            #    kernel-side exposure of physical write is a high-value audit
+            #    target because it is the primitive that defeats those layers.
+            phys = _hits(names, (
+                "physical_write", "phystokv", "vtophys", "ptov",
+                "vm_protect", "vm_map", "iomemorydescriptor", "withaddressrange",
+            ))
+            if phys and ("physical_write" in phys or "phystokv" in phys or "vm_protect" in phys):
+                findings.append(self._make(
+                    manifest, fn, "PRIVILEGE_ESCALATION",
+                    f"物理内存写/映射原语暴露：{', '.join(phys[:4])}",
+                    "函数暴露物理地址转换/写入或内存保护修改能力。在 Apple Silicon 上，"
+                    "内核文本与只读常量由 KTRR/CTRR 保护、页表由 PPL 保护；"
+                    "若能任意写物理内存或改保护属性，是绕过这些硬件保护的直接前置原语。"
+                    "需确认调用者受限且参数不可由用户态控制。",
+                    _assembly(fn, list(phys)),
+                    78.0, 0.58, "physical-write-primitive",
+                    "CWE-269 Improper Privilege Management",
+                ))
+
+            # 2) KTRR/CTRR protected regions referenced by strings/imports.
+            ktrr = _hits(names, KTRR_TOKENS)
+            if ktrr:
+                findings.append(self._make(
+                    manifest, fn, "PAC_DOWNGRADE",
+                    f"触及 KTRR/CTRR 内核文本保护区域：{', '.join(ktrr[:3])}",
+                    "函数引用内核文本/常量只读区（KTRR/CTRR）相关符号。这类区域在正常路径下不可写；"
+                    "若存在写入尝试或地址计算外泄，可能破坏硬件级代码完整性。需人工确认访问方向。",
+                    _assembly(fn, list(ktrr)),
+                    66.0, 0.5, "ktrr-region",
+                    "CWE-693 Protection Mechanism Failure",
+                ))
+
+            # 3) PPL / system key compartment references.
+            ppl = _hits(names, PPL_TOKENS)
+            if ppl:
+                findings.append(self._make(
+                    manifest, fn, "PRIVILEGE_ESCALATION",
+                    f"触及 PPL / 系统密钥区：{', '.join(ppl[:3])}",
+                    "函数命中受保护页面层(PPL)或系统密钥隔间(SKC)相关符号；"
+                    "这些机制保护页表与加密密钥，正常 kext 不应直接操作其页面。"
+                    "需确认是否只是通用 keybag 操作，还是对受保护页的越权访问。",
+                    _assembly(fn, list(ppl)),
+                    64.0, 0.45, "ppl-skc",
+                    "CWE-693 Protection Mechanism Failure",
+                ))
+
+            # 4) secure-boot / SEP chain material (img4/tss/nonce) surfacing in
+            #    a kernel extension — unusual and worth noting.
+            sep = _hits(names, SEP_TOKENS)
+            if sep and ("img4" in sep or "tss" in sep or "nonce" in " ".join(sep)):
+                findings.append(self._make(
+                    manifest, fn, "OTHER",
+                    f"安全启动链材料出现在 kext：{', '.join(sep[:3])}",
+                    "内核扩展中出现 IMG4/TSS/nonce 等安全启动链或 SEP 相关材料；"
+                    "正常情况下这些由 iBoot/SEP 处理，出现在 kext 中值得复核其来源与用途，"
+                    "可能涉及启动链验证逻辑。此为线索提示，非漏洞确认。",
+                    _assembly(fn, list(sep)),
+                    50.0, 0.4, "secure-boot-material",
+                    "CWE-693 Protection Mechanism Failure",
+                ))
+
+        # 5) manifest-level: BTI (branch target identification) presence on
+        #    arm64e indicates CFR hardening; absence is only informational.
+        pac_fams = set()
+        for fn in manifest.functions:
+            for site in fn.pac_sites:
+                pac_fams.add(_pac_family(site.mnemonic))
+        bti = any(f in ("bti", "btic") for f in pac_fams)
+        if not bti and any(
+            s.mnemonic.lower().startswith("blr") for fn in manifest.functions for s in fn.call_sites
+        ):
+            dummy = manifest.functions[0] if manifest.functions else Function(name=manifest.target)
+            findings.append(self._make(
+                manifest, dummy, "PAC_DOWNGRADE",
+                "未见 BTI 分支目标标识（分支目标强化缺失）",
+                f"目标 {manifest.arch} 含间接调用，但未采集到 bti/btic 分支目标指令；"
+                "BTI 是 arm64e 的控制流强化(CFR)机制，缺失意味着间接跳转目标不受硬件约束。"
+                "此为加固状态提示，需结合编译选项确认。",
+                [f"{manifest.target}: no BTI / CFR hardening observed"],
+                44.0, 0.38, "no-bti",
+                "CWE-693 Protection Mechanism Failure",
+            ))
+        return findings
+
+    def _make(
+        self, manifest, fn, vuln_class, title, description, assembly,
+        score, confidence, symbol, cwe,
+    ) -> Finding:
+        return Finding(
+            id=_id(self.name, manifest, fn, f"{vuln_class}:{title}"),
+            title=f"[{vuln_class}] {title}",
+            severity=Severity.from_score(score),
+            layer=Layer.STATIC,
+            target=manifest.target,
+            description=description,
+            location=f"{fn.name} @ {fn.address}" if fn.address else fn.name,
+            evidence=assembly,
+            assembly=assembly,
+            score=round(score, 1),
+            confidence=confidence,
+            cwe=cwe,
+            vuln_class=vuln_class,
+            symbol=symbol,
+            recommendation="核对 Apple Silicon 硬件保护假设（KTRR/PPL/PAC/BTI）与调用者权限；本报告不生成利用代码。",
+            tags=[vuln_class, "apple-silicon", "arm64e"],
         )

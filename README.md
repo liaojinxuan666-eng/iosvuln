@@ -2,20 +2,36 @@
 
 iOS 内核驱动（kext）**静态 + 提取式 Hook 双层分析流水线**。只标注**内存破坏 / OOB read / 提权原语 / 沙盒逃逸 / RCE 等漏洞类型对应的汇编地址**，**不生成 PoC 或利用代码**。
 
-## 流程
+## 一站式扫描（推荐）
+
+**只需加选项，不用记命令顺序**——`iosvuln scan` 一条命令完成 探测→采集→选目标→分析→报告→归档：
+
+```bash
+iosvuln scan --ipsw firmware.ipsw --full          # 从 IPSW 全量扫描
+iosvuln scan --kernelcache ./kernelcache --target all
+iosvuln scan --kext-dir ./exported-kexts
+iosvuln scan --device --ssh-host root@localhost   # 直连越狱设备
+iosvuln scan --from demo                          # 无真机，合成数据体验
+iosvuln scan --preset pac                         # 只看 arm64e PAC / 指针类
+iosvuln scan --preset deep --full                 # 全部插件 + 全部目标
+```
+
+`--from {auto,ipsw,device,kext,kernelcache,demo}` 指定数据来源（默认 auto 自动探测）；`--full` 全目标+全插件；`--preset {fast,pac,deep}` 切换分析档位。旧的 `info`/`targets`/`run` 子命令仍保留，供进阶分步使用。
+
+## 分析流程
 
 ```
-0. 环境探测：iosvuln info
-   设备名 / 系统版本 / Build / 架构 / 内核 → 用于适配路径与架构假设
-1. 目标选择：iosvuln targets
-   列出可分析 kext（编号、风险、是否可用）→ 单个 / 多个 / 全量
-2. 采集输入（四选一，不再强制完整 IPSW）
-   --kext-dir <dir> | --kernelcache <path> | --device | --ipsw <file>
+0. 环境探测：设备名 / 版本 / Build / 架构 / 内核（含 arm64e PAC 画像）
+1. 目标选择：列出可分析 kext → 单个 / auto / 全量
+2. 采集输入（四选一）：--kext-dir | --kernelcache | --device | --ipsw
 3. ipsw kernel kexts / extract → Mach-O ；或直接用 --kext-dir
-4. r2 / r2pipe → AnalysisManifest（含每条调用的汇编地址）
-   ├─ vuln-primitives / pointer-safety / taint-sink / lock-balance / api-risk / surface-props
+4. r2 / r2pipe → AnalysisManifest（每条调用的汇编地址 + arm64e PAC 指令）
+   ├─ 通用原语：vuln-primitives / taint-sink / lock-balance / api-risk / surface-props
+   ├─ 内存与指针：pointer-safety / advanced-threats
+   ├─ 逻辑与平台：logic-flaws / darwin-internals / apple-silicon
+   ├─ 硬件保护：pac-security（arm64e PAC / BTI）
    └─ 提取式 ElleKit tweak 导出的符号地址 + 机器码
-5. report.md / report.html / report.json（按原语归集的汇编位置，实时进度条）
+5. report.md / report.html / report.json（按原语归集，汇编完整不截断，实时进度条）
 ```
 
 **提取式 Hook**：`Tweak.xm` 用 `MSFindSymbol` 解析 `IOSurface.framework` 符号，导出函数地址与前 96 字节机器码到 `/var/mobile/iosvuln/extracted.json`。**不安装 inline hook、不改写任何函数行为**。
@@ -42,9 +58,13 @@ pip3 install '.[r2]'      # 可选：r2pipe
 手机端依赖（均可从 **Procursus 源**用 Sileo 安装，截图已确认可用）：`python3`、`radare2`、`ipsw`。装了 `ipsw` 后手机端也能直接从 IPSW 提取内核；这些命令缺失时自动降级 DEMO。安装 `analyze` deb 会自动把 zsh 快捷命令写入 `~/.zshrc`（NewTerm 直接可用）：
 
 ```
-iv   = iosvuln        ivs  = 扫描当前目录   ivd  = demo        ivi  = info
-ivt  = targets        ivh  = home           ivim = import      ivl  = history
-ivk <kernelcache>     = 直接扫描指定内核    ivall = 采集+扫描一条龙
+iv                    = 无参数直接一站式扫描（auto）
+ivs   = scan          ivf  = scan --full     ivd  = scan --from demo
+ivz   = scan --preset fast                   ivp  = scan --preset pac
+ivx   = scan --preset deep --full            ivi  = info
+ivt   = targets       ivh  = home            ivim = import      ivl  = history
+ivk <kernelcache>     = 扫描指定内核         ivipsw <file> = 扫描 IPSW
+ivall                 = 采集+扫描一条龙
 ```
 
 **文档**：[安装指南 docs/INSTALL.md](docs/INSTALL.md) · [使用指南 docs/USAGE.md](docs/USAGE.md)
@@ -52,6 +72,12 @@ ivk <kernelcache>     = 直接扫描指定内核    ivall = 采集+扫描一条�
 ## 常用命令
 
 ```bash
+# ★ 一站式：只加选项即可（推荐）
+iosvuln scan --ipsw firmware.ipsw --full
+iosvuln scan --kernelcache ./kernelcache --target all --workdir ./out
+iosvuln scan --from demo --preset pac
+iosvuln scan --device --ssh-host root@localhost
+
 # 0. 看环境（本地主机 / 已连接设备 / collection.json）
 iosvuln info
 iosvuln info --device --ssh-host root@localhost
@@ -109,6 +135,16 @@ iosvuln run --no-progress --workdir ./out           # 关闭进度条（默认�
 
 每条 finding 带 `assembly`（`地址: 指令 目标`）、`vuln_class`、`symbol`、证据和置信度。多目标时每条 finding 的 `target` 字段标明来源 kext。`report.html` 是自包含的单文件，可直接用浏览器打开，详细线索可折叠。
 
+### 逻辑漏洞与 Darwin / Apple Silicon 专项
+
+本轮新增三个平台相关的检测层，都是**基于调用序列、符号与字符串的可复核启发式**，定位审计重点而非确认可利用：
+
+- **`logic-flaws`（逻辑缺陷）**：特权入口缺授权检查、状态返回码未校验、引用计数失衡（泄漏/过度释放）、状态机操作无同步、多个长度字段缺一致性校验。聚焦"逻辑顺序"而非简单共现。
+- **`darwin-internals`（Darwin/XNU 特有）**：Mach IPC 端口权限与跨任务面缺 entitlement 校验、`task_for_pid`/host port 缺 AMFI 校验、IOKit 内存描述符生命周期不完整、vnode/挂载操作缺 MACF 策略检查。
+- **`apple-silicon`（Apple Silicon 硬件保护）**：物理内存写/映射原语（KTRR/PPL 绕过前置）、触及 KTRR/CTRR 文本保护区、PPL/系统密钥区、安全启动链材料出现在 kext、BTI/CFR 分支目标强化缺失。
+
+> 这些是**攻击面定位**：例如"物理写原语"是绕过 KTRR/PPL 的前置能力，不代表已绕过；每条都带置信度，需人工复核调用者权限与参数来源。`--preset pac` 可只看 arm64e 相关层。
+
 ### arm64e PAC 专项
 
 r2 后端会额外采集 **PAC 指令**（认证分支 `braa`/`blraa`/`retaa`、签名 `pacia`、验证 `autia`、剥离 `xpaci`、BTI 等）到每个函数的 `pac_sites`，由 `pac-security` 插件据此判断绕过面。判断依据都是**可复核的指令证据**：
@@ -122,7 +158,7 @@ r2 后端会额外采集 **PAC 指令**（认证分支 `braa`/`blraa`/`retaa`、
 
 ## 插件与测试
 
-内置：`vuln-primitives`、`pointer-safety`、`pac-security`、`advanced-threats`、`taint-sink`、`lock-balance`、`api-risk`、`surface-props`、`hook-observation`。
+内置 11 个插件：`vuln-primitives`、`pointer-safety`、`pac-security`、`advanced-threats`、`logic-flaws`、`darwin-internals`、`apple-silicon`、`taint-sink`、`lock-balance`、`api-risk`、`surface-props`、`hook-observation`。可用 `iosvuln plugins` 查看，`scan --preset {fast,pac,deep}` 或 `--plugin` 选用。
 
 分析过程默认显示**实时进度条**，动态更新已发现的疑似漏洞数量；用 `--no-progress` 关闭。
 

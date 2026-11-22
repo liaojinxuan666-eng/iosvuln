@@ -28,6 +28,7 @@ class Config:
     plugins: List[str] = field(
         default_factory=lambda: [
             "vuln-primitives", "pointer-safety", "pac-security", "advanced-threats",
+            "logic-flaws", "darwin-internals", "apple-silicon",
             "taint-sink", "lock-balance", "api-risk", "surface-props", "hook-observation",
         ]
     )

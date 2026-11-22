@@ -19,6 +19,7 @@ from . import static_rules  # noqa: F401 - registers static plugins
 
 DEFAULT_PLUGINS = [
     "vuln-primitives", "pointer-safety", "pac-security", "advanced-threats",
+    "logic-flaws", "darwin-internals", "apple-silicon",
     "taint-sink", "lock-balance", "api-risk", "surface-props", "hook-observation",
 ]
 
@@ -37,6 +38,23 @@ def _build_parser() -> argparse.ArgumentParser:
 
     demo = sub.add_parser("demo", help="等价于 run --demo")
     _add_run_args(demo)
+
+    scan = sub.add_parser(
+        "scan",
+        help="一站式扫描：只加选项即可完成采集→选目标→分析→报告→归档",
+        description="一站式扫描。示例：iosvuln scan --ipsw firmware.ipsw --full",
+    )
+    _add_run_args(scan)
+    scan.add_argument(
+        "--from", dest="source_preset", default="auto",
+        choices=["auto", "ipsw", "device", "kext", "kernelcache", "demo"],
+        help="数据来源预设：auto 自动探测(默认)；demo 用合成数据；其余按选项自动补齐",
+    )
+    scan.add_argument("--full", action="store_true",
+                      help="全速档：分析全部高价值目标 + 启用全部插件 + 最多目标数放宽到 40")
+    scan.add_argument("--all-plugins", action="store_true", help="启用全部已注册插件")
+    scan.add_argument("--preset", default="", choices=["", "deep", "fast", "pac"],
+                      help="分析预设：deep=全部插件, fast=核心插件, pac=仅 PAC/指针规则")
 
     sub.add_parser("deps", help="检查 ipsw / r2 / r2pipe 可用性")
     sub.add_parser("plugins", help="列出已注册分析插件")
@@ -127,6 +145,59 @@ def _config_from_args(args: argparse.Namespace, demo: bool = False) -> Config:
     )
 
 
+def _apply_scan_preset(args: argparse.Namespace) -> str:
+    """Turn one-shot `scan` flags into a normalized `run`/`demo` configuration.
+
+    Mutates ``args`` in place and returns the effective command. The goal is
+    that a user only supplies flags (``--ipsw ... --full``) and never has to
+    chain info/targets/run manually.
+    """
+    preset = getattr(args, "source_preset", "auto") or "auto"
+    ipsw = getattr(args, "ipsw_file", "") or ""
+    kext_dir = getattr(args, "kext_dir", "") or ""
+    kernelcache = getattr(args, "kernelcache", "") or ""
+    device = getattr(args, "device", False)
+
+    # Source preset: fill in the demo flag when requested; otherwise let the
+    # explicit path flags (or auto-detection in Acquisition) decide.
+    if preset == "demo":
+        args.demo = True
+    elif preset == "ipsw" and ipsw:
+        args.ipsw_file = ipsw
+    elif preset == "device":
+        args.device = True
+    elif preset == "kext" and kext_dir:
+        args.kext_dir = kext_dir
+    elif preset == "kernelcache" and kernelcache:
+        args.kernelcache = kernelcache
+    # auto: no forced flag; Pipeline's Acquisition auto-detects from whatever
+    # path options are present, and falls back to DEMO if nothing is available.
+
+    # Target preset.
+    if getattr(args, "full", False):
+        args.target = ["all"]
+        args.max_targets = 40
+    elif not getattr(args, "target", None):
+        # Default to auto: high-interest kexts selected by target ranking.
+        args.target = ["auto"]
+
+    # Plugin preset.
+    all_plugins = list(list_plugins().keys())
+    preset_name = getattr(args, "preset", "") or ""
+    if getattr(args, "full", False) or preset_name == "deep" or getattr(args, "all_plugins", False):
+        args.plugin = all_plugins
+    elif preset_name == "fast":
+        args.plugin = [
+            "vuln-primitives", "pointer-safety", "pac-security",
+            "taint-sink", "logic-flaws",
+        ]
+    elif preset_name == "pac":
+        args.plugin = ["pac-security", "pointer-safety", "apple-silicon"]
+    # else: keep DEFAULT_PLUGINS (set by parser default None -> _config_from_args)
+
+    return "demo" if getattr(args, "demo", False) else "run"
+
+
 def _print_result(result: PipelineResult, quiet: bool = False) -> None:
     if not quiet:
         print("\n=== 流水线结果 ===")
@@ -159,6 +230,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     command = args.command or "run"
+
+    # --- one-shot 'scan': normalize options into a regular run -------------
+    # Users only add flags; we pick the data source, targets and plugin set so
+    # there is no need to remember the info/targets/run command sequence.
+    if command == "scan":
+        command = _apply_scan_preset(args)
 
     if command == "deps":
         status = check_dependencies(Config())

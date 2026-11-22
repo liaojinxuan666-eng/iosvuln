@@ -25,6 +25,39 @@ iosvuln 对 iOS 内核驱动（kext）做**静态分析 + 提取式 Hook** 双�
 
 ---
 
+## 一站式扫描（最简单用法）
+
+**不用记命令顺序，只加选项**。`iosvuln scan` 把 探测 → 采集 → 选目标 → 分析 → 报告 → 归档 合成一条命令：
+
+```bash
+iosvuln scan --ipsw firmware.ipsw --full          # 从 IPSW 全量扫描
+iosvuln scan --kernelcache ./kernelcache --target all
+iosvuln scan --kext-dir ./exported-kexts
+iosvuln scan --device --ssh-host root@localhost   # 直连越狱设备
+iosvuln scan --from demo                          # 无真机，合成数据体验
+iosvuln scan --preset pac --kernelcache ./kc      # 只看 arm64e PAC / 指针类
+iosvuln scan --preset deep --full                 # 全部插件 + 全部目标
+```
+
+核心选项：
+
+| 选项 | 作用 |
+| --- | --- |
+| `--from {auto,ipsw,device,kext,kernelcache,demo}` | 数据来源预设，默认 `auto` 自动探测 |
+| `--ipsw FILE` / `--kernelcache FILE` / `--kext-dir DIR` / `--device` | 直接指定数据源 |
+| `--full` | 全部高价值目标 + 全部插件（最多 40 目标） |
+| `--preset {fast,pac,deep}` | 分析档位：核心 / arm64e PAC / 全部 |
+| `--target` | 目标选择：`all` / `auto` / 编号 / bundle id，可重复 |
+| `--workdir DIR` | 输出目录（默认 `iosvuln-out`） |
+| `--home DIR` / `--no-archive` | 长期存储目录 / 关闭归档 |
+| `--no-progress` / `--quiet` | 关闭进度条 / 只输出报告路径 |
+
+分析完成后自动归档到长期目录并打印报告路径。手机端（装 `analyze` deb）用 `ivs`（=scan）、`ivf`（=scan --full）、`ivd`（=demo）、`ivp`（=PAC 档）、`iv`（无参数直接 scan）即可。
+
+> 下方 §3–§8 是**分步工作流**，适合需要精细控制时使用；日常直接用 `scan` 即可。
+
+---
+
 ## 1. 它能做什么 / 不能做什么
 
 **能做的**
@@ -331,6 +364,18 @@ iosvuln run --kext-dir ./exported-kexts \
 
 这些是基于可复核指令证据的**绕过面定位**，非动态 PAC 违例确认，每条带置信度，需人工复核指针来源与签名约定。非 arm64e 目标自动跳过 PAC 规则。
 
+### 逻辑漏洞与 Darwin / Apple Silicon 层
+
+除内存类问题外，另有三个插件覆盖逻辑与平台特有面（都用 `vuln_class` 归类，报告里可按类别筛选）：
+
+| 插件 | 关注点 | 典型类别 |
+| --- | --- | --- |
+| `logic-flaws` | 特权入口缺授权、状态返回码未校验、引用计数失衡、状态机无同步、长度字段一致性 | `PRIVILEGE_ESCALATION` / `UAF` / `TOCTOU` / `INTEGER_OVERFLOW` |
+| `darwin-internals` | Mach IPC 端口权限、task_for_pid/host port 的 AMFI 校验、IOKit 描述符生命周期、vnode/MACF | `SANDBOX_ESCAPE` / `PRIVILEGE_ESCALATION` / `UAF` |
+| `apple-silicon` | 物理内存写/映射原语、KTRR/CTRR 文本区、PPL/SKC、安全启动材料、BTI/CFR 缺失 | `PRIVILEGE_ESCALATION` / `PAC_DOWNGRADE` |
+
+例如 `apple-silicon` 报出"物理写原语"，指的是**绕过 KTRR/PPL 所需的前置能力**，并非已绕过硬件保护；所有条目都标注置信度，定位的是优先审计点。`scan --preset pac` 只跑 arm64e 相关层，`--preset deep` 跑全部。
+
 **报告里的地址只是“值得优先看的位置”**，需要你用 r2 / IDA / 反编译器复核参数来源、边界检查与权限判断。报告明确声明不生成利用代码。
 
 ---
@@ -463,6 +508,9 @@ iosvuln home --home /data/iosvuln --init
 ## 13. 命令参考
 
 ```
+iosvuln scan            ★ 一站式：只加选项完成采集→选目标→分析→报告→归档
+                        常用：--ipsw/--kernelcache/--kext-dir/--device
+                              --from demo|auto  --full  --preset fast|pac|deep
 iosvuln run            执行完整流水线（加 --demo 使用合成数据）
 iosvuln demo           等价于 run --demo
 iosvuln info           探测设备 / 环境信息
