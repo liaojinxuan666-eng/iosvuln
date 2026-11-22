@@ -44,7 +44,7 @@ jobs:
 
       - name: Build extractive tweak deb
         working-directory: templates/ellekit
-        run: make package TARGET=iphone FINALPACKAGE=1
+        run: make package FINALPACKAGE=1
 
       - name: Build collector deb
         run: bash packaging/build_deb.sh
