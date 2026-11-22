@@ -34,7 +34,7 @@ jobs:
           echo "$HOME/theos/bin" >> "$GITHUB_PATH"
 
       - name: Install iOS SDK
-        run: git clone --depth 1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
+        run: rm -rf "$HOME/theos/sdks" && git clone --depth 1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
 
       - name: Show toolchain
         run: |
