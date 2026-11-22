@@ -10,6 +10,7 @@ from typing import List, Optional
 
 from . import __version__
 from .config import DEFAULT_TARGETS, Config
+from .device_info import gather as gather_device
 from .hook_layer import generate_tweak
 from .ipswwrap import IpswTool, check_dependencies
 from .pipeline import Pipeline, PipelineResult
@@ -40,6 +41,14 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("deps", help="检查 ipsw / r2 / r2pipe 可用性")
     sub.add_parser("plugins", help="列出已注册分析插件")
 
+    info = sub.add_parser("info", help="探测设备/环境信息（名称、系统版本、架构）")
+    _add_acquire_args(info)
+    info.add_argument("--collection", default="", help="设备端 collection.json 路径")
+
+    targets = sub.add_parser("targets", help="列出可分析目标并选择")
+    _add_acquire_args(targets)
+    targets.add_argument("--json", action="store_true")
+
     kexts = sub.add_parser("kexts", help="列出 kernelcache 中的 kext")
     kexts.add_argument("kernelcache")
     kexts.add_argument("--workdir", default="iosvuln-out")
@@ -49,6 +58,15 @@ def _build_parser() -> argparse.ArgumentParser:
     scaffold.add_argument("--workdir", default="iosvuln-out")
 
     return parser
+
+
+def _add_acquire_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--kernelcache", default="", help="已提取的 kernelcache 路径")
+    parser.add_argument("--kext-dir", default="", help="已导出的 kext Mach-O 目录")
+    parser.add_argument("--device", action="store_true", help="从已连接的越狱设备拉取")
+    parser.add_argument("--device-path", default="", help="设备上 kernelcache 的明确路径")
+    parser.add_argument("--ssh-host", default="", help="设备 SSH 主机，默认 root@localhost")
+    parser.add_argument("--workdir", default="iosvuln-out")
 
 
 def _add_run_args(parser: argparse.ArgumentParser) -> None:
@@ -62,6 +80,8 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--target", action="append", default=None, help="目标 kext bundle id，可重复")
     parser.add_argument("--plugin", action="append", default=None, help="启用的插件名，可重复")
     parser.add_argument("--observations", default="", help="由 hook 采集的 syslog 文件路径")
+    parser.add_argument("--max-targets", type=int, default=12, help="全量分析时最多处理的目标数")
+    parser.add_argument("--interactive", action="store_true", help="交互式选择可分析目标")
     parser.add_argument("--min-severity", default="INFO", choices=["INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL"])
     parser.add_argument("--quiet", action="store_true", help="只输出报告路径")
 
@@ -79,6 +99,8 @@ def _config_from_args(args: argparse.Namespace, demo: bool = False) -> Config:
         plugins=getattr(args, "plugin", None) or list(DEFAULT_PLUGINS),
         observations=getattr(args, "observations", "") or "",
         min_severity=getattr(args, "min_severity", "INFO"),
+        max_targets=getattr(args, "max_targets", 12),
+        interactive=getattr(args, "interactive", False),
         demo=demo or getattr(args, "demo", False),
     )
 
@@ -118,6 +140,39 @@ def main(argv: Optional[List[str]] = None) -> int:
     if command == "plugins":
         for name, description in list_plugins().items():
             print(f"  {name:18} {description}")
+        return 0
+
+    if command == "info":
+        cfg = _config_from_args(args)
+        device = gather_device(cfg, check_dependencies(cfg), getattr(args, "collection", ""))
+        print(device.summary())
+        print(json.dumps(device.to_dict(), indent=2, ensure_ascii=False))
+        return 0
+
+    if command == "targets":
+        cfg = _config_from_args(args)
+        from .acquire import Acquisition
+        from .models import Kext
+        from .targets import discover as discover_targets, render_table
+
+        acquired = Acquisition(cfg).acquire()
+        kexts: List[Kext] = []
+        macho_files: List[str] = []
+        if acquired:
+            macho_files = list(acquired.macho_files)
+            kexts = [
+                Kext(bundle_id=os.path.basename(p), path=p) for p in macho_files
+            ]
+            if not kexts and acquired.kernelcache:
+                from .ipswwrap import IpswTool
+
+                kexts = IpswTool(cfg).inventory(acquired.kernelcache, cfg.targets)
+        found = discover_targets(kexts, macho_files)
+        if args.json:
+            print(json.dumps([t.to_dict() for t in found], indent=2, ensure_ascii=False))
+        else:
+            print(render_table(found))
+            print("\n选择方式：--target 1,3 / --target all / --target auto / --interactive")
         return 0
 
     if command == "kexts":

@@ -31,10 +31,28 @@ if [ -z "$FOUND" ]; then
   done
 fi
 
+PRODUCT=$(sw_vers -productName 2>/dev/null || echo "iOS")
+VERSION=$(sw_vers -productVersion 2>/dev/null || sysctl -n kern.osproductversion 2>/dev/null || echo "")
+BUILD=$(sw_vers -buildVersion 2>/dev/null || sysctl -n kern.osversion 2>/dev/null || echo "")
+MODEL=$(sysctl -n hw.model 2>/dev/null || echo "")
+ARCH=$(uname -m 2>/dev/null || echo "arm64e")
+HOSTNAME=$(hostname 2>/dev/null || echo "")
+KERNEL=$(uname -s 2>/dev/null || echo "")
+
 echo "{" > "$OUT_JSON"
 echo "  \"tool\": \"iosvuln-collector\"," >> "$OUT_JSON"
 echo "  \"mode\": \"$MODE\"," >> "$OUT_JSON"
 echo "  \"source\": \"$FOUND\"," >> "$OUT_JSON"
+echo "  \"device\": {" >> "$OUT_JSON"
+echo "    \"product\": \"$PRODUCT\"," >> "$OUT_JSON"
+echo "    \"version\": \"$VERSION\"," >> "$OUT_JSON"
+echo "    \"build\": \"$BUILD\"," >> "$OUT_JSON"
+echo "    \"model\": \"$MODEL\"," >> "$OUT_JSON"
+echo "    \"name\": \"$MODEL\"," >> "$OUT_JSON"
+echo "    \"arch\": \"$ARCH\"," >> "$OUT_JSON"
+echo "    \"kernel\": \"$KERNEL\"," >> "$OUT_JSON"
+echo "    \"hostname\": \"$HOSTNAME\"" >> "$OUT_JSON"
+echo "  }," >> "$OUT_JSON"
 
 if [ -n "$FOUND" ] && [ "$MODE" = "file" ]; then
   SIZE=$(stat -f %z "$FOUND" 2>/dev/null || stat -c %s "$FOUND" 2>/dev/null || echo 0)

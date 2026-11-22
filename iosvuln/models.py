@@ -169,8 +169,8 @@ class AnalysisManifest:
                 return fn
         return None
 
-    def to_json(self, indent: int = 2) -> str:
-        payload = {
+    def to_dict(self) -> Dict[str, Any]:
+        return {
             "target": self.target,
             "source_file": self.source_file,
             "arch": self.arch,
@@ -179,7 +179,9 @@ class AnalysisManifest:
             "strings": self.strings,
             "metadata": self.metadata,
         }
-        return json.dumps(payload, indent=indent, ensure_ascii=False)
+
+    def to_json(self, indent: int = 2) -> str:
+        return json.dumps(self.to_dict(), indent=indent, ensure_ascii=False)
 
     @classmethod
     def from_json(cls, text: str) -> "AnalysisManifest":

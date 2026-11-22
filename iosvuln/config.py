@@ -33,6 +33,8 @@ class Config:
     )
     min_severity: str = "INFO"
     observations: str = ""
+    max_targets: int = 12
+    interactive: bool = False
     demo: bool = False
     keep_artifacts: bool = True
 

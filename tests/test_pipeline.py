@@ -161,3 +161,41 @@ class NewFeatureTests(unittest.TestCase):
             self.assertIn("blr x8", text)
 
 
+
+
+class EnvironmentAndTargetTests(unittest.TestCase):
+    def test_device_profile(self):
+        from iosvuln.device_info import DeviceInfo
+
+        info = DeviceInfo(name="iPhone", version="17.5", build="21F90", arch="arm64e")
+        profile = info.profile()
+        self.assertEqual(profile["major_version"], 17)
+        self.assertTrue(profile["pointer_authentication"])
+        self.assertIn("iPhone", info.summary())
+
+    def test_target_selection(self):
+        from iosvuln.targets import discover, select
+
+        with open(os.path.join(EXAMPLES, "kexts_demo.json"), encoding="utf-8") as fh:
+            kexts = parse_kexts(fh.read())
+        found = discover(kexts)
+        all_targets = select(["all"], found)
+        self.assertGreaterEqual(len(all_targets), 3)
+        one = select(["1"], found)
+        self.assertEqual(len(one), 1)
+        by_name = select(["IOSurface"], found)
+        self.assertTrue(any("IOSurface" in t.name for t in by_name))
+
+    def test_demo_all_targets(self):
+        with tempfile.TemporaryDirectory() as workdir:
+            cfg = Config(workdir=workdir, demo=True, targets=["all"])
+            result = Pipeline(cfg).run()
+            self.assertGreaterEqual(len(result.selected), 3)
+            self.assertGreater(len(result.manifests), 1)
+            targets_in_findings = {f.target for f in result.findings}
+            self.assertGreater(len(targets_in_findings), 1)
+            with open(result.reports["markdown"], encoding="utf-8") as fh:
+                text = fh.read()
+            self.assertIn("## 0. 环境信息", text)
+            self.assertIn("## 0.1 可分析目标", text)
+

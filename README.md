@@ -2,25 +2,25 @@
 
 iOS 内核驱动（kext）**静态 + 提取式 Hook 双层分析流水线**。只标注**内存破坏 / OOB read / 提权原语 / 沙盒逃逸 / RCE 等漏洞类型对应的汇编地址**，**不生成 PoC 或利用代码**。
 
-## 设计
+## 流程
 
 ```
-输入（四选一，不再强制完整 IPSW）
-  1. --kext-dir <dir>      已导出的 kext Mach-O 目录
-  2. --kernelcache <path>  指定路径的内核缓存
-  3. --device              从已连接越狱设备拉取
-  4. --ipsw <file>         兼容旧流程
-        │
-        ├─ ipsw kernel kexts / extract  → kext 清单 + Mach-O
-        └─ r2 / r2pipe                   → AnalysisManifest（含每条调用的汇编地址）
-                 ├─ vuln-primitives / taint-sink / lock-balance / api-risk / surface-props
-                 └─ 提取式 ElleKit tweak 导出的符号地址 + 机器码
-                        → report.md / report.json（按原语归集的汇编位置）
+0. 环境探测：iosvuln info
+   设备名 / 系统版本 / Build / 架构 / 内核 → 用于适配路径与架构假设
+1. 目标选择：iosvuln targets
+   列出可分析 kext（编号、风险、是否可用）→ 单个 / 多个 / 全量
+2. 采集输入（四选一，不再强制完整 IPSW）
+   --kext-dir <dir> | --kernelcache <path> | --device | --ipsw <file>
+3. ipsw kernel kexts / extract → Mach-O ；或直接用 --kext-dir
+4. r2 / r2pipe → AnalysisManifest（含每条调用的汇编地址）
+   ├─ vuln-primitives / taint-sink / lock-balance / api-risk / surface-props
+   └─ 提取式 ElleKit tweak 导出的符号地址 + 机器码
+5. report.md / report.json（按原语归集的汇编位置）
 ```
 
-**提取式 Hook 的含义**：ElleKit 组件（`Tweak.x`）用 `MSFindSymbol` 解析 `IOSurface.framework` 符号，把函数地址与前 96 字节机器码写入 `/var/mobile/iosvuln/extracted.json`。它**不安装 inline hook、不改写任何函数行为**，只做"提取"。分析在离线侧完成。
+**提取式 Hook**：`Tweak.x` 用 `MSFindSymbol` 解析 `IOSurface.framework` 符号，导出函数地址与前 96 字节机器码到 `/var/mobile/iosvuln/extracted.json`。**不安装 inline hook、不改写任何函数行为**。
 
-## 安装与使用
+## 安装
 
 分析端（macOS / Linux）：
 
@@ -29,70 +29,60 @@ pip3 install -e .
 pip3 install '.[r2]'      # 可选：r2pipe
 ```
 
-设备端：用 **Sileo 安装** `packaging/dev.iosvuln.collect_0.1.0_iphoneos-arm64.deb`。它是 rootless 采集器，提供 `iosvuln-collect [路径]`，从系统缓存路径或你指定的路径读取 kernelcache/kext，输出 `/var/mobile/iosvuln/collection.json`。deb 里同时附带提取式 tweak 源码（`Tweak.x`/`Makefile`/`control`），需你自己用 Theos 编译成 tweak.deb——当前 deb **不包含已编译的 dylib**（沙箱没有 iOS SDK）。
+设备端：用 **Sileo 安装** `packaging/dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb`。它提供 `iosvuln-collect [路径]`，从系统缓存或指定路径采集 kernelcache/kext，并把**设备名、系统版本、Build、架构**写入 `/var/mobile/iosvuln/collection.json`。deb 内附提取式 tweak 源码，需你自己用 Theos 编译——沙箱没有 iOS SDK，**deb 不含已编译 dylib**。
+
+## 常用命令
 
 ```bash
-# 设备上
-iosvuln-collect /System/Library/Caches/com.apple.kernelcaches/kernelcache
-scp root@localhost:/var/mobile/iosvuln/collection.json .
+# 0. 看环境（本地主机 / 已连接设备 / collection.json）
+iosvuln info
+iosvuln info --device --ssh-host root@localhost
+iosvuln info --collection ./collection.json
 
-# 分析端
+# 1. 看可分析目标并选取
+iosvuln targets --kernelcache ./kernelcache.decompressed
+iosvuln targets --kext-dir ./exported-kexts --json
+iosvuln run --target 1,3,5 --kernelcache ./kernelcache.decompressed
+iosvuln run --target all --max-targets 12 --kernelcache ./kernelcache.decompressed
+iosvuln run --interactive --device          # 交互式选择编号
+
+# 2. 采集与分析
+iosvuln-collect /System/Library/Caches/com.apple.kernelcaches/kernelcache   # 设备上
 iosvuln run --kext-dir ./exported-kexts --workdir ./out
 iosvuln run --device --device-path /System/Library/Caches/com.apple.kernelcaches/kernelcache
 iosvuln run --kernelcache ./kernelcache.decompressed --min-severity MEDIUM
-iosvuln demo --workdir /tmp/iosvuln-demo      # 无依赖演示
+iosvuln demo --target all --workdir /tmp/iosvuln-demo
 ```
 
-`--device` 会依次尝试 `ipsw idev afc pull` / `ipsw idev pull` / `scp root@localhost:<path>`；也可以 `--ssh-host` 指定主机。
+`--target` 支持：`all`/`*`（全量，受 `--max-targets` 限制）、`auto`/`catalog`（内置目录中高风险目标）、`1,3,5`（`iosvuln targets` 显示的编号）、任意 bundle id / 名称子串。
 
-## 输出重点
+## 输出
 
-报告新增 **§3.1 按原语归集的汇编位置**，例如：
+报告新增 **§0 环境信息**、**§0.1 可分析目标**（目录/可用/已选），以及 **§3.1 按原语归集的汇编位置**：
 
 | 原语 | 含义 |
 | --- | --- |
-| `OOB_WRITE` / `MEMORY_CORRUPTION` | 用户输入源与 `memcpy`/`memmove`/`writeBytes`/分配器共现 |
-| `OOB_READ` | `copyout`/`readBytes`/`GetBaseAddress` 与 size/offset 共现 |
+| `OOB_WRITE` / `MEMORY_CORRUPTION` | 用户输入源与 `memcpy` / `memmove` / `writeBytes` / 分配器共现 |
+| `OOB_READ` | `copyout` / `readBytes` / `GetBaseAddress` 与 size/offset 共现 |
 | `INTEGER_OVERFLOW` | 尺寸计算与分配/拷贝组合 |
 | `PRIVILEGE_ESCALATION` | 外部方法、属性写入、`task_for_pid` 等内核能力入口 |
 | `SANDBOX_ESCAPE` | mach port / task / VM 跨边界能力组合 |
 | `RCE` | `blr`（函数指针）间接调用点 |
 | `RACE` / `UAF` | 加解锁失衡，且伴随释放/引用计数操作 |
 
-每条 finding 都带 `assembly`（`地址: 指令 目标`）、`vuln_class`、`symbol`、证据和置信度。报告明确声明不生成利用代码。
+每条 finding 带 `assembly`（`地址: 指令 目标`）、`vuln_class`、`symbol`、证据和置信度。多目标时每条 finding 的 `target` 字段标明来源 kext。
 
-## 插件
+## 插件与测试
 
-```
-vuln-primitives  按原语分类并输出汇编地址（核心）
-taint-sink       输入源→危险操作共现
-lock-balance     加解锁失衡
-api-risk         高风险 API / 复杂控制流
-surface-props    IOSurface 外部入口专项
-hook-observation 提取式符号导出 + 用户态观测归并
-```
-
-自定义插件继承 `Plugin` 并用 `@register` 注册，见 README 前文或 `iosvuln/static_rules.py`。
-
-## 测试
+内置：`vuln-primitives`、`taint-sink`、`lock-balance`、`api-risk`、`surface-props`、`hook-observation`。
 
 ```bash
-PYTHONPATH=. python3 -m unittest discover -s tests -v
+PYTHONPATH=. python3 -m unittest discover -s tests -v   # 15 项
 ```
 
 ## 说明
 
 - 静态规则是优先级排序工具，不替代人工逆向；所有条目需人工复核。
-- 提取式 tweak 只导出用户态符号；内核 kext 内部靠 r2 静态分析，二者按地址关联。
+- 提取式 tweak 只导出用户态符号；内核 kext 内部靠 r2 静态分析，按地址关联。
+- DEMO 多目标模式所有目标共用同一份合成函数数据（报告会明确警告）。
 - 请仅在有权测试的设备与固件上使用。
-
-## 结构
-
-```
-iosvuln/
-├── iosvuln/            CLI、配置、模型、采集、ipsw/r2 后端、规则插件、报告
-├── templates/ellekit/  提取式 Tweak.x + Theos 工程
-├── packaging/deb/      Sileo 采集器 deb 源码；build_deb.sh 构建
-├── examples/           demo fixtures（含汇编调用地址）
-└── tests/              unittest
-```

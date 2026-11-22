@@ -39,6 +39,46 @@ def render_markdown(
         f"| 依赖状态 | ipsw={meta.get('ipsw', 'missing')}, r2={meta.get('r2', 'missing')} |",
         "",
     ]
+    env = meta.get("device", {}) or {}
+    profile = env.get("profile", {}) or {}
+    env_lines = [
+        "## 0. 环境信息",
+        "",
+        "| 项目 | 值 |",
+        "| --- | --- |",
+        f"| 设备 | {env.get('name') or env.get('model') or '-'} |",
+        f"| 产品 / 版本 | {env.get('product') or '-'} {env.get('version') or ''} |",
+        f"| Build | {env.get('build') or '-'} |",
+        f"| 架构 | {env.get('arch') or profile.get('arch') or '-'} |",
+        f"| 内核 | {env.get('kernel') or '-'} |",
+        f"| 信息来源 | {env.get('source') or '-'} |",
+        f"| 版本推断 | major={profile.get('major_version', '-')}, PAC={profile.get('pointer_authentication')} |",
+        "",
+    ]
+
+    selected = meta.get("targets", []) or []
+    available = meta.get("available_targets", []) or []
+    selected_ids = {t.get("bundle_id") for t in selected}
+    target_lines = [
+        "## 0.1 可分析目标",
+        "",
+        f"已选 {len(selected)} 项；目录共 {len(available)} 项，可用 "
+        f"{sum(1 for t in available if t.get('available'))} 项。",
+        "",
+        "| # | Bundle ID | 风险 | 可用 | 已选 | 说明 |",
+        "| ---: | --- | --- | --- | --- | --- |",
+    ]
+    for index, target in enumerate(available, 1):
+        target_lines.append(
+            f"| {index} | `{target.get('bundle_id', '')}` | {target.get('risk', '')} | "
+            f"{'yes' if target.get('available') else 'no'} | "
+            f"{'YES' if target.get('bundle_id') in selected_ids else ''} | "
+            f"{target.get('description', '')} |"
+        )
+    target_lines.append("")
+
+    lines = env_lines + target_lines + lines
+
     warnings = meta.get("warnings", [])
     if warnings:
         lines += ["**注意事项**", ""]
