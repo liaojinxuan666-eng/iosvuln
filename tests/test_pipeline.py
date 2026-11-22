@@ -363,3 +363,121 @@ class ProgressTests(unittest.TestCase):
         p.step("x", 1, 1, 5)
         p.finish()
         self.assertEqual(buf.getvalue(), "")
+
+
+class PacSecurityTests(unittest.TestCase):
+    def _manifest(self, funcs, arch="arm64e"):
+        payload = {"target": "com.apple.driver.TestKext", "arch": arch, "functions": funcs}
+        return AnalysisManifest.from_json(json.dumps(payload))
+
+    def test_xpac_strip_detected(self):
+        m = self._manifest([{
+            "name": "f", "calls": ["copyin"],
+            "pac_sites": ["0x1000: xpaci x8"],
+        }])
+        fs = static_rules.PacSecurityPlugin().run(_context(m))
+        self.assertTrue(any(f.vuln_class == "PAC_BYPASS" and "剥离" in f.title for f in fs))
+        self.assertTrue(all(f.assembly for f in fs))
+
+    def test_unsigned_indirect_call_detected(self):
+        m = self._manifest([{
+            "name": "dispatch", "calls": [],
+            "call_sites": ["0x2000: blr x8"],
+        }])
+        fs = static_rules.PacSecurityPlugin().run(_context(m))
+        self.assertTrue(any(f.vuln_class == "PAC_BYPASS" and "未认证间接" in f.title for f in fs))
+
+    def test_pac_downgrade_when_no_pac_at_all(self):
+        m = self._manifest([{
+            "name": "dispatch", "calls": [],
+            "call_sites": ["0x2000: blr x8"],
+        }])
+        fs = static_rules.PacSecurityPlugin().run(_context(m))
+        self.assertTrue(any(f.vuln_class == "PAC_DOWNGRADE" for f in fs))
+
+    def test_authenticated_branch_suppresses_downgrade(self):
+        m = self._manifest([{
+            "name": "dispatch", "calls": [],
+            "call_sites": ["0x2000: blraa x8, x16"],
+            "pac_sites": ["0x2000: blraa x8, x16"],
+        }])
+        fs = static_rules.PacSecurityPlugin().run(_context(m))
+        self.assertFalse(any(f.vuln_class == "PAC_DOWNGRADE" for f in fs))
+
+    def test_non_arm64e_skipped(self):
+        m = self._manifest([{"name": "f", "calls": [], "pac_sites": ["0x1000: xpaci x8"]}], arch="arm64")
+        self.assertEqual(static_rules.PacSecurityPlugin().run(_context(m)), [])
+
+    def test_key_family_mismatch(self):
+        m = self._manifest([{
+            "name": "f", "calls": [],
+            "pac_sites": ["0x1000: pacia x8", "0x1004: autib x8"],
+        }])
+        fs = static_rules.PacSecurityPlugin().run(_context(m))
+        self.assertTrue(any(f.vuln_class == "PAC_SIGN_MISMATCH" for f in fs))
+
+
+class AdvancedThreatsTests(unittest.TestCase):
+    def _run(self, func):
+        payload = {"target": "com.apple.driver.TestKext", "functions": [func]}
+        m = AnalysisManifest.from_json(json.dumps(payload))
+        return static_rules.AdvancedThreatsPlugin().run(_context(m))
+
+    def test_format_string(self):
+        fs = self._run({
+            "name": "logit", "calls": ["copyin", "sprintf"],
+            "strings": ["%s"], "call_sites": ["0x10: bl _sprintf"],
+        })
+        self.assertTrue(any(f.vuln_class == "FORMAT_STRING" for f in fs))
+
+    def test_double_fetch_toctou(self):
+        fs = self._run({
+            "name": "f", "calls": ["copyin"],
+            "call_sites": ["0x10: bl _copyin", "0x20: bl _copyin"],
+        })
+        self.assertTrue(any(f.vuln_class == "TOCTOU" for f in fs))
+
+    def test_uninitialized_export(self):
+        fs = self._run({
+            "name": "f", "calls": ["kalloc", "copyout"],
+            "call_sites": ["0x10: bl _kalloc", "0x20: bl _copyout"],
+        })
+        self.assertTrue(any(f.vuln_class == "UNINITIALIZED" for f in fs))
+
+    def test_zeroed_export_not_flagged(self):
+        fs = self._run({
+            "name": "f", "calls": ["kalloc", "memset", "copyout"],
+        })
+        self.assertFalse(any(f.vuln_class == "UNINITIALIZED" for f in fs))
+
+    def test_type_confusion(self):
+        fs = self._run({"name": "f", "calls": ["OSDynamicCast"]})
+        self.assertTrue(any(f.vuln_class == "TYPE_CONFUSION" for f in fs))
+
+
+class PacInstructionCollectionTests(unittest.TestCase):
+    def test_r2_collects_pac_sites(self):
+        from iosvuln.r2_backend import _calls_from_pdf
+
+        pdf = {"ops": [
+            {"offset": "0x1000", "mnemonic": "bl", "type": "call", "fwdto": "memcpy"},
+            {"offset": "0x1004", "mnemonic": "blraa", "type": "call", "inturn": "sym.g"},
+            {"offset": "0x1008", "mnemonic": "xpaci", "type": "none"},
+            {"offset": "0x100c", "mnemonic": "retaa", "type": "ret"},
+        ]}
+        calls, _, sites, pac = _calls_from_pdf(pdf)
+        self.assertIn("memcpy", calls)
+        self.assertTrue(any(s.mnemonic == "blraa" for s in sites))
+        self.assertEqual(len(pac), 3)
+        self.assertTrue(any(s.mnemonic == "xpaci" for s in pac))
+
+
+class PacDeviceProfileTests(unittest.TestCase):
+    def test_arm64e_profile(self):
+        from iosvuln.device_info import DeviceInfo
+
+        info = DeviceInfo(arch="arm64e", version="17.0")
+        p = info.profile()
+        self.assertTrue(p["is_arm64e"])
+        self.assertTrue(p["pointer_authentication"])
+        self.assertEqual(p["pac_scheme"], "arm64e-pac")

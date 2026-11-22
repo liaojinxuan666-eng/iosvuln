@@ -40,7 +40,8 @@
         "memcpy",
         "IOLockLock",
         "IOLockUnlock",
-        "setProperty"
+        "setProperty",
+        "copyin"
       ],
       "xrefs": [],
       "strings": [
@@ -51,7 +52,9 @@
       "call_sites": [
         "0xfffffff0065a4600: bl _IOMalloc",
         "0xfffffff0065a4654: bl _memcpy",
-        "0xfffffff0065a46b0: blr x8"
+        "0xfffffff0065a46b0: blr x8",
+        "0xfffffff0065a4610: bl _copyin",
+        "0xfffffff0065a4630: bl _copyin"
       ]
     },
     {
@@ -62,7 +65,8 @@
         "copyin",
         "OSDictionary::setObject",
         "kalloc",
-        "memcpy"
+        "memcpy",
+        "OSDynamicCast"
       ],
       "xrefs": [
         "IOSurface::create"
@@ -76,7 +80,8 @@
       "call_sites": [
         "0xfffffff0065a7820: bl _copyin",
         "0xfffffff0065a7890: bl _kalloc",
-        "0xfffffff0065a78d8: bl _memcpy"
+        "0xfffffff0065a78d8: bl _memcpy",
+        "0xfffffff0065a7850: bl _OSDynamicCast"
       ]
     },
     {
@@ -86,18 +91,22 @@
       "calls": [
         "copyout",
         "memcpy",
-        "IOLockLock"
+        "IOLockLock",
+        "sprintf"
       ],
       "xrefs": [],
       "strings": [
         "property",
         "buffer",
-        "size"
+        "size",
+        "%s",
+        "%d"
       ],
       "complexity": 9,
       "call_sites": [
         "0xfffffff0065a9c40: bl _copyout",
-        "0xfffffff0065a9c88: bl _memcpy"
+        "0xfffffff0065a9c88: bl _memcpy",
+        "0xfffffff0065a9c50: bl _sprintf"
       ]
     },
     {
@@ -123,6 +132,11 @@
         "0xfffffff0065ab190: bl _kfree",
         "0xfffffff0065ab1b0: bl _memcpy",
         "0xfffffff0065ab1d8: bl _kfree"
+      ],
+      "pac_sites": [
+        "0xfffffff0065ab180: pacia x8",
+        "0xfffffff0065ab188: autib x8",
+        "0xfffffff0065ab18c: xpaci x8"
       ]
     },
     {
@@ -139,7 +153,9 @@
       ],
       "strings": [
         "pixel",
-        "format"
+        "format",
+        "size",
+        "length"
       ],
       "complexity": 22,
       "call_sites": [

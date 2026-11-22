@@ -22,6 +22,33 @@ INTERESTING_STRINGS = (
     "width", "height", "pixel", "key", "mach", "client", "heap",
 )
 
+# arm64e pointer-authentication instruction families. These are collected into
+# Function.pac_sites (separate from ordinary calls) so PAC-specific rules can
+# reason about signing/authentication balance and bypass surfaces.
+PAC_FAMILIES = {
+    # authenticated indirect branches / returns
+    "braa", "brab", "braaz", "brabz", "blraa", "blrab", "blraaz", "blrabz",
+    "retaa", "retab", "bra", "blra",
+    # signing
+    "pacia", "pacib", "paciza", "pacizb", "paciasp", "pacibsp", "paciaz",
+    "pacibz", "pacia1716", "pacib1716",
+    # authentication
+    "autia", "autib", "autiza", "autizb", "autiasp", "autibsp", "autiaz",
+    "autibz", "autia1716", "autib1716",
+    # stripping / downgrade
+    "xpaci", "xpacd", "bti", "btic", "btjz",
+}
+
+
+def _pac_family(mnemonic: str) -> str:
+    """Return the matched PAC instruction family, or '' if not a PAC op."""
+    m = (mnemonic or "").lower().lstrip()
+    # r2 sometimes appends width/suffix like 'braa x8' already split into mnemonic
+    for family in PAC_FAMILIES:
+        if m == family or m.startswith(family + ".") or m.startswith(family + " "):
+            return family
+    return ""
+
 
 def _jq(data: Any, *keys: str) -> Any:
     for key in keys:
@@ -95,10 +122,11 @@ class R2Backend:
             return fn
         try:
             pdf = r2.cmdj(f"pdfj @ {addr}") or {}
-            calls, complexity, sites = _calls_from_pdf(pdf)
+            calls, complexity, sites, pac_sites = _calls_from_pdf(pdf)
             fn.calls = calls
             fn.complexity = complexity
             fn.call_sites = sites
+            fn.pac_sites = pac_sites
         except Exception:
             pass
         return fn
@@ -148,10 +176,11 @@ class R2Backend:
             addr = fn.address
             if addr:
                 pdf = self._cmd_json(path, f"pdfj @ {addr}")
-                calls, complexity, sites = _calls_from_pdf(pdf)
+                calls, complexity, sites, pac_sites = _calls_from_pdf(pdf)
                 fn.calls = calls
                 fn.complexity = complexity
                 fn.call_sites = sites
+                fn.pac_sites = pac_sites
             functions.append(fn)
         return AnalysisManifest(
             target=target,
@@ -185,16 +214,43 @@ def _as_list(value: Any) -> List[Dict[str, Any]]:
     return []
 
 
-def _calls_from_pdf(pdf: Any) -> Tuple[List[str], int, List[CallSite]]:
-    """Return (call targets, cyclomatic-ish complexity, concrete call sites)."""
+def _calls_from_pdf(pdf: Any) -> Tuple[List[str], int, List[CallSite], List[CallSite]]:
+    """Return (call targets, cyclomatic-ish complexity, call sites, PAC sites)."""
     ops = _as_list(pdf.get("ops")) if isinstance(pdf, dict) else []
     calls: List[str] = []
     sites: List[CallSite] = []
+    pac_sites: List[CallSite] = []
     complexity = 1
     for op in ops:
         mnemonic = str(op.get("mnemonic", ""))
-        is_call = op.get("type") in ("call", "cjmp") or mnemonic.startswith(("bl", "blr"))
-        is_indirect = mnemonic.startswith("blr")
+        offset = str(op.get("offset", ""))
+        family = _pac_family(mnemonic)
+
+        # Authenticated indirect branches (braa/blraa/...) are call-like: record
+        # both as a PAC site and as an indirect call so RCE rules can see them.
+        is_auth_branch = family in (
+            "braa", "brab", "braaz", "brabz", "blraa", "blrab",
+            "blraaz", "blrabz", "bra", "blra",
+        )
+        is_call = (
+            op.get("type") in ("call", "cjmp")
+            or mnemonic.startswith(("bl", "blr"))
+            or is_auth_branch
+        )
+        is_indirect = mnemonic.startswith("blr") or is_auth_branch
+
+        if family:
+            pac_sites.append(
+                CallSite(
+                    address=offset,
+                    mnemonic=mnemonic or family,
+                    target=str(
+                        _jq(op, "fwdto") or _jq(op, "inturn")
+                        or op.get("comment") or ""
+                    ),
+                )
+            )
+
         if is_call:
             called = (
                 _jq(op, "fwdto")
@@ -208,11 +264,11 @@ def _calls_from_pdf(pdf: Any) -> Tuple[List[str], int, List[CallSite]]:
                 calls.append(target)
                 sites.append(
                     CallSite(
-                        address=str(op.get("offset", "")),
-                        mnemonic=mnemonic or "bl",
+                        address=offset,
+                        mnemonic=mnemonic or ("braa" if is_auth_branch else "bl"),
                         target=target,
                     )
                 )
         if op.get("type") == "cjmp" or mnemonic.startswith(("cb", "tb")):
             complexity += 1
-    return list(dict.fromkeys(calls)), complexity, sites
+    return list(dict.fromkeys(calls)), complexity, sites, pac_sites

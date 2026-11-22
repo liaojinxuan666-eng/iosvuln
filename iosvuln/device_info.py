@@ -47,18 +47,28 @@ class DeviceInfo:
                 major = int(match.group(1))
                 break
         arch = self.arch or ("arm64e" if major >= 12 else "arm64")
+        is_arm64e = "arm64e" in (arch or "").lower()
+        # Apple A12/iOS 12+ uses arm64e with pointer authentication. Presence of
+        # a real arm64e slice is the strongest signal; version is a fallback.
+        pac_present = is_arm64e or major >= 12
         return {
             "major_version": major,
             "arch": arch,
-            "pointer_authentication": major >= 12,
+            "is_arm64e": is_arm64e,
+            "pointer_authentication": pac_present,
+            "pac_scheme": "arm64e-pac" if pac_present else "none",
+            "pac_bypass_surface": (
+                "未认证间接调用(blr)、签名剥离(xpac)、函数指针未签名是重点审计面"
+                if pac_present else "非 arm64e，PAC 规则不适用"
+            ),
             "modern_kernelcache": major >= 12,
             "kernelcache_candidates": [
                 "/System/Library/Caches/com.apple.kernelcaches/kernelcache",
                 "/System/Library/Caches/com.apple.kernelcaches/kernelcache.release",
             ],
             "note": (
-                "根据设备主版本推断，仅用于路径/架构提示"
-                if major
+                "根据设备主版本/架构推断，仅用于路径、架构与 PAC 分析提示"
+                if major or is_arm64e
                 else "未取得系统版本，使用保守默认"
             ),
         }

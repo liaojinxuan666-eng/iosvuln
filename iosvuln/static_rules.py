@@ -48,6 +48,33 @@ SURFACE_FN_HINTS = (
     "setvalue", "getvalue", "createbuffer", "allocatesurface", "mapmemory",
 )
 
+# Format-string sinks (functions whose first argument is a format string).
+FORMAT_TOKENS = (
+    "printf", "sprintf", "snprintf", "os_log", "os_log_with_type", "kprintf",
+    "syslog", "fprintf", "asprintf", "vasprintf", "vprintf", "vsnprintf",
+    "nslog", "log", "print",
+)
+# Uninitialized-memory reads that leak heap contents OUT to userspace.
+# Only export-to-user sinks qualify here; plain alloc->memcpy is an internal
+# operation and handled by the taint/OOB rules instead (avoids noise).
+UNINIT_READ_TOKENS = (
+    "copyout", "getbytes", "writebytes", "copybytes",
+)
+# Zeroing / initialization calls that legitimize a copy-out.
+ZERO_TOKENS = ("memset", "bzero", "memsetpattern", "zero", "memclear")
+# Two fetches of the same user buffer -> check/use race (double-fetch).
+FETCH_TOKENS = ("copyin", "copyinstr", "copyfromuser", "vmread", "readuser")
+# Cast / type-coercion APIs without an accompanying dynamic type check.
+CAST_TOKENS = (
+    "osdynamiccast", "osrequiredcast", "staticcast", "dynamiccast",
+    "reinterpretcast", "getmetaclass", "osobject", "ismemberof",
+)
+# Bounds / validation calls that would legitimize a size/offset.
+BOUND_TOKENS = (
+    "checksize", "validate", "validaterange", "boundscheck", "clamp",
+    "checklength", "verify", "inbounds", "range_check", "safecast",
+)
+
 
 def _norm(value: str) -> str:
     value = value.lower().replace("sym.imp.", "").replace("imp.", "")
@@ -544,5 +571,312 @@ class PointerSafetyPlugin(_RulePlugin):
             vuln_class=vuln_class,
             symbol=symbol,
             recommendation="复核该汇编地址处对象的生命周期与引用计数；本报告不生成利用代码。",
+            tags=[vuln_class],
+        )
+
+
+# --- arm64e PAC (pointer authentication) --------------------------------------
+# Indirect branches that carry authentication (verified at the branch).
+PAC_AUTH_BRANCH = ("braa", "brab", "braaz", "brabz", "blraa", "blrab",
+                   "blraaz", "blrabz", "bra", "blra")
+# Instructions that strip or replace a signature (classic bypass primitive).
+PAC_STRIP = ("xpaci", "xpacd")
+# Signing vs. authentication families; the key/register family must match.
+PAC_SIGN = ("pacia", "pacib", "paciza", "pacizb", "paciasp", "pacibsp",
+            "paciaz", "pacibz", "pacia1716", "pacib1716")
+PAC_AUTH = ("autia", "autib", "autiza", "autizb", "autiasp", "autibsp",
+            "autiaz", "autibz", "autia1716", "autib1716")
+
+
+def _pac_family(name: str) -> str:
+    """Normalize a PAC mnemonic to its family token."""
+    n = (name or "").lower().strip()
+    for fam in PAC_STRIP + PAC_AUTH_BRANCH + PAC_SIGN + PAC_AUTH + ("bti", "btic"):
+        if n == fam or n.startswith(fam + "."):
+            return fam
+    return ""
+
+
+def _pac_key_family(fam: str) -> str:
+    """Return 'A' / 'B' for keyed sign/auth ops, else ''."""
+    if "1716" in fam:
+        return "A" if "a1716" in fam else "B"
+    if "ia" in fam and "pac" not in fam and "auti" not in fam:
+        return ""
+    if fam.startswith(("pacia", "autia", "paciza", "autiza", "paciasp", "autiasp")):
+        return "A"
+    if fam.startswith(("pacib", "autib", "pacizb", "autizb", "pacibsp", "autibsp")):
+        return "B"
+    if fam.startswith(("paciaz", "autiaz")):
+        return "A"
+    if fam.startswith(("pacibz", "autibz")):
+        return "B"
+    return ""
+
+
+@register
+class PacSecurityPlugin(_RulePlugin):
+    name = "pac-security"
+    description = "arm64e PAC 绕过面：签名剥离 / 未认证间接调用 / 签名验证失衡 / PAC 降级"
+
+    def _scan(self, manifest: AnalysisManifest) -> List[Finding]:
+        findings: List[Finding] = []
+        arch = (manifest.arch or "").lower()
+        if "arm64e" not in arch:
+            return findings  # PAC rules only apply to arm64e slices
+
+        all_pac: List[Tuple[Function, CallSite, str]] = []
+        for fn in manifest.functions:
+            for site in fn.pac_sites:
+                fam = _pac_family(site.mnemonic)
+                if fam:
+                    all_pac.append((fn, site, fam))
+
+        families = [fam for _, _, fam in all_pac]
+        n_auth_branch = sum(1 for f in families if f in PAC_AUTH_BRANCH)
+        n_strip = sum(1 for f in families if f in PAC_STRIP)
+        n_sign = sum(1 for f in families if f in PAC_SIGN)
+        n_verify = sum(1 for f in families if f in PAC_AUTH)
+
+        # --- per-function findings -------------------------------------------
+        for fn in manifest.functions:
+            fn_pac = [(s, _pac_family(s.mnemonic)) for s in fn.pac_sites]
+            fn_pac = [(s, f) for s, f in fn_pac if f]
+
+            # 1) signature stripped before use -> bypass primitive.
+            stripped = [(s, f) for s, f in fn_pac if f in PAC_STRIP]
+            if stripped:
+                evidence = [s.render() for s, _ in stripped[:6]]
+                findings.append(
+                    self._make(
+                        manifest, fn, "PAC_BYPASS",
+                        "指针认证签名被剥离（xpac）",
+                        f"检测到 {len(stripped)} 条签名剥离指令（xpaci/xpacd）。"
+                        "把认证指针转换为普通指针是绕过 PAC 的常见前置步骤；"
+                        "需确认剥离后的指针是否用于间接调用或作为数据外传。",
+                        evidence, 74.0, 0.68, "xpac → 普通指针",
+                    )
+                )
+
+            # 2) register-indirect call with NO authenticated branch anywhere in
+            #    the kext -> function pointer likely unsigned (classic bypass).
+            indirect = [s for s in fn.call_sites if s.mnemonic.lower().startswith("blr")]
+            fn_auth_branch = [s for s, f in fn_pac if f in PAC_AUTH_BRANCH]
+            if indirect and not fn_auth_branch and n_auth_branch == 0:
+                findings.append(
+                    self._make(
+                        manifest, fn, "PAC_BYPASS",
+                        "未认证间接调用（函数指针未签名）",
+                        f"函数含 {len(indirect)} 处 blr 间接调用，但整个 kext 未发现 "
+                        "braa/blraa 等认证分支；若函数指针来自用户态或可写内存，"
+                        "这是 arm64e 上典型的 PAC 绕过入口。",
+                        [s.render() for s in indirect[:6]], 72.0, 0.6, "blr（无认证分支）",
+                    )
+                )
+
+            # 3) signed with key A but verified with key B (or vice versa) in
+            #    the same function -> authentication will always fail or be
+            #    skipped, indicating a misuse of the PAC key space.
+            keys_present = {
+                _pac_key_family(f) for _, f in fn_pac
+                if _pac_key_family(f) in ("A", "B")
+            }
+            if len(keys_present) == 2:
+                ev = [s.render() for s, f in fn_pac if _pac_key_family(f)][:6]
+                findings.append(
+                    self._make(
+                        manifest, fn, "PAC_SIGN_MISMATCH",
+                        "同一函数内混用 A/B 两套 PAC 密钥",
+                        "同一函数同时出现 A 密钥与 B 密钥的签名/验证指令；"
+                        "跨密钥签名与验证无法相互认证，可能导致校验被绕过或逻辑错误，"
+                        "需人工确认字段/指针的签名密钥约定。",
+                        ev, 64.0, 0.55, "PAC key A/B 混用",
+                    )
+                )
+
+        # --- manifest-level findings (whole kext) ----------------------------
+        dummy = manifest.functions[0] if manifest.functions else Function(name=manifest.target)
+        n_indirect = sum(
+            1 for fn in manifest.functions
+            for s in fn.call_sites if s.mnemonic.lower().startswith("blr")
+        )
+        if n_indirect > 0 and n_auth_branch == 0 and not all_pac:
+            findings.append(
+                self._make(
+                    manifest, dummy, "PAC_DOWNGRADE",
+                    "整个 kext 未启用 PAC（降级编译迹象）",
+                    f"目标架构为 {manifest.arch}，共发现 {n_indirect} 处间接调用，"
+                    "但未发现任何 PAC 签名、认证或认证分支指令，疑似未启用指针认证"
+                    "（arm64e 降级编译或未使用 PAC）。此类二进制缺少指针完整性保护，"
+                    "控制流劫持类漏洞的利用门槛显著降低。",
+                    [f"{manifest.target}: 0 PAC instructions / {n_indirect} indirect calls"],
+                    70.0, 0.62, "PAC 未启用",
+                )
+            )
+        if n_sign > 0 and n_verify == 0:
+            all_sign_sites = [s.render() for _, s, f in all_pac if f in PAC_SIGN][:6]
+            findings.append(
+                self._make(
+                    manifest, dummy, "PAC_SIGN_MISMATCH",
+                    "存在 PAC 签名但无对应验证指令",
+                    f"全 kext 发现 {n_sign} 条签名指令、0 条认证指令；"
+                    "签名后未验证意味着指针认证未形成闭环，需确认验证是否在调用方"
+                    "或通过认证分支隐式完成。",
+                    all_sign_sites or [f"{manifest.target}: {n_sign} sign / 0 auth"],
+                    62.0, 0.55, "sign 无 auth",
+                )
+            )
+        return findings
+
+    def _make(
+        self, manifest: AnalysisManifest, fn: Function, vuln_class: str,
+        title: str, description: str, assembly: List[str], score: float,
+        confidence: float, symbol: str,
+    ) -> Finding:
+        return Finding(
+            id=_id(self.name, manifest, fn, f"{vuln_class}:{title}"),
+            title=f"[{vuln_class}] {title}",
+            severity=Severity.from_score(score),
+            layer=Layer.STATIC,
+            target=manifest.target,
+            description=description,
+            location=f"{fn.name} @ {fn.address}" if fn.address else fn.name,
+            evidence=assembly,
+            assembly=assembly,
+            score=round(score, 1),
+            confidence=confidence,
+            cwe={
+                "PAC_BYPASS": "CWE-693 Protection Mechanism Failure",
+                "PAC_DOWNGRADE": "CWE-757 Selection of Less-Secure Algorithm",
+                "PAC_SIGN_MISMATCH": "CWE-694 Use of Multiple Resources with Duplicate Identifier",
+            }.get(vuln_class, ""),
+            vuln_class=vuln_class,
+            symbol=symbol,
+            recommendation="核对指针的签名/验证密钥族与生命周期；本报告不生成利用代码。",
+            tags=[vuln_class, "arm64e", "pac"],
+        )
+
+
+@register
+class AdvancedThreatsPlugin(_RulePlugin):
+    name = "advanced-threats"
+    description = "扩展威胁面：格式化字符串 / 未初始化内存读 / TOCTOU / 栈缓冲 / 类型混淆 / 边界校验缺失"
+
+    def _scan(self, manifest: AnalysisManifest) -> List[Finding]:
+        findings: List[Finding] = []
+        for fn in manifest.functions:
+            names = list(fn.calls)
+            norm_calls = [_norm(c) for c in names]
+            norm_fn = _norm(fn.name)
+            strings_lower = " ".join(fn.strings).lower()
+
+            # 1) format string: user/source data + formatting sink + format
+            #    specifiers in strings, with no explicit literal format guard.
+            fmts = _hits(names, FORMAT_TOKENS)
+            sources = _hits(names, SOURCE_TOKENS)
+            has_specifier = any(
+                token in strings_lower for token in ("%s", "%d", "%x", "%p", "%n", "%ld", "%lu")
+            )
+            if fmts and (sources or has_specifier):
+                risky = [f for f in fmts if f in ("sprintf", "snprintf", "os_log", "kprintf", "printf", "syslog")]
+                if risky:
+                    ev = [s.render() for s in fn.call_sites
+                          if any(f in _norm(s.target) for f in risky)][:6]
+                    findings.append(self._make(
+                        manifest, fn, "FORMAT_STRING",
+                        f"用户可控格式串风险：{', '.join(risky)}",
+                        "格式化函数与用户输入源/格式说明符共现；若格式串本身可被用户态控制，"
+                        "可能导致信息泄露或内存写（%n）。需确认格式串是固定字面量还是外部传入。",
+                        ev or [f"{fn.name}: fmt={risky}, sources={sources}"],
+                        66.0, 0.55, "format-string",
+                        "CWE-134 Use of Externally-Controlled Format String",
+                    ))
+
+            # 2) uninitialized memory read / copy-out: allocate + copy out with
+            #    no memset/bzero in between -> heap contents may leak.
+            allocs = _hits(names, ALLOC_TOKENS)
+            outs = _hits(names, UNINIT_READ_TOKENS)
+            zeroed = _hits(names, ZERO_TOKENS)
+            if allocs and outs and not zeroed:
+                findings.append(self._make(
+                    manifest, fn, "UNINITIALIZED",
+                    f"分配后未初始化即拷贝/外传：{', '.join(allocs)} → {', '.join(outs)}",
+                    "函数分配内存后直接拷贝或回传用户态，未见清零/初始化调用；"
+                    "可能泄露内核堆残留内容。需确认每个字节在写出前均已初始化。",
+                    _assembly(fn, list(allocs) + list(outs)),
+                    58.0, 0.5, "uninit-read",
+                    "CWE-908 Use of Uninitialized Resource",
+                ))
+
+            # 3) TOCTOU / double-fetch: two or more user-buffer fetches and a
+            #    check-like string present -> classic check/use race.
+            fetches = [s for s in fn.call_sites
+                       if any(f in _norm(s.target) for f in FETCH_TOKENS)]
+            if len(fetches) >= 2:
+                findings.append(self._make(
+                    manifest, fn, "TOCTOU",
+                    f"同一函数多次取数（double-fetch）：{len(fetches)} 次 copyin",
+                    "函数内出现多次从用户态拷贝同一缓冲区，若校验与使用之间重复读取，"
+                    "攻击者可在两次读取间修改内容（TOCTOU）。需确认是否只读取一次并本地缓存。",
+                    [s.render() for s in fetches[:6]],
+                    64.0, 0.58, "double-fetch",
+                    "CWE-367 Time-of-check Time-of-use Race Condition",
+                ))
+
+            # 4) type confusion: object cast API with no member/type check.
+            casts = _hits(names, CAST_TOKENS)
+            checks = _hits(names, ("ismemberof", "getmetaclass", "checktype", "kindof", "iskindof"))
+            if casts and not checks:
+                findings.append(self._make(
+                    manifest, fn, "TYPE_CONFUSION",
+                    f"对象强制转换缺少类型校验：{', '.join(casts)}",
+                    "函数进行对象类型转换，但未见动态类型/成员校验；"
+                    "若对象来自用户可控的属性字典，可能触发类型混淆。",
+                    _assembly(fn, list(casts)),
+                    60.0, 0.5, "type-confusion",
+                    "CWE-843 Access of Resource Using Incompatible Type",
+                ))
+
+            # 5) stack buffer risk: strcpy/sprintf with size-like strings and
+            #    no stack protector hint (high complexity amplifies).
+            # Only genuinely unbounded / stack-local ops qualify; memcpy has an
+            # explicit length and belongs to the OOB class, not stack overflow.
+            stack_sinks = _hits(names, ("strcpy", "sprintf", "alloca", "strcat", "vsprintf"))
+            size_words = any(w in strings_lower for w in ("size", "len", "length", "width", "height"))
+            if stack_sinks and size_words and fn.complexity >= 6:
+                findings.append(self._make(
+                    manifest, fn, "STACK_OVERFLOW",
+                    f"栈上边界拷贝风险：{', '.join(stack_sinks)}",
+                    "无界/受限字符串或栈分配函数与尺寸字段共现，且控制流较复杂；"
+                    "需确认目标缓冲为堆分配或存在上界校验，避免栈溢出。",
+                    _assembly(fn, list(stack_sinks)),
+                    56.0, 0.46, "stack-buffer",
+                    "CWE-121 Stack-based Buffer Overflow",
+                ))
+        return findings
+
+    def _make(
+        self, manifest: AnalysisManifest, fn: Function, vuln_class: str,
+        title: str, description: str, assembly: List[str], score: float,
+        confidence: float, symbol: str, cwe: str,
+    ) -> Finding:
+        if any(h in _norm(fn.name) for h in SURFACE_FN_HINTS):
+            score += 6.0
+        return Finding(
+            id=_id(self.name, manifest, fn, f"{vuln_class}:{title}"),
+            title=f"[{vuln_class}] {title}",
+            severity=Severity.from_score(score),
+            layer=Layer.STATIC,
+            target=manifest.target,
+            description=description,
+            location=f"{fn.name} @ {fn.address}" if fn.address else fn.name,
+            evidence=assembly,
+            assembly=assembly,
+            score=round(score, 1),
+            confidence=confidence,
+            cwe=cwe,
+            vuln_class=vuln_class,
+            symbol=symbol,
+            recommendation="复核参数来源、边界与生命周期；本报告仅标注审计位置，不生成利用代码。",
             tags=[vuln_class],
         )

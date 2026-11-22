@@ -18,8 +18,8 @@ from .plugins import list_plugins
 from . import static_rules  # noqa: F401 - registers static plugins
 
 DEFAULT_PLUGINS = [
-    "vuln-primitives", "pointer-safety", "taint-sink", "lock-balance",
-    "api-risk", "surface-props", "hook-observation",
+    "vuln-primitives", "pointer-safety", "pac-security", "advanced-threats",
+    "taint-sink", "lock-balance", "api-risk", "surface-props", "hook-observation",
 ]
 
 

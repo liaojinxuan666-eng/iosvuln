@@ -153,6 +153,8 @@ iosvuln history
 
 工具会自动探测 `/var/jb/usr/bin`、`/usr/bin` 等路径下的 `ipsw`/`r2`，无需手动配路径。装齐后手机端能力与电脑端一致：既能 `--ipsw` 从完整包提取，也能 `--kernelcache` / `--kext-dir` 分析已有数据。
 
+**arm64e PAC 分析**：分析 A12+ 设备的 arm64e kext 时，r2 会采集 PAC 指令并由 `pac-security` 插件检测签名剥离（`xpac`）、未认证间接调用、PAC 降级与密钥失衡。这依赖真实反汇编（radare2），DEMO 模式用的是内置 PAC 合成指令演示流程；静态结果是绕过面定位，需人工复核。
+
 **zsh 快捷命令**：`analyze` deb 安装时会自动向 `~/.zshrc` 写入一行 source，NewTerm 重开后即可用短命令：
 
 ```

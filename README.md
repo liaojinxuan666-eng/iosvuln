@@ -96,14 +96,33 @@ iosvuln run --no-progress --workdir ./out           # 关闭进度条（默认�
 | `INTEGER_OVERFLOW` | 尺寸计算与分配/拷贝组合 |
 | `PRIVILEGE_ESCALATION` | 外部方法、属性写入、`task_for_pid` 等内核能力入口 |
 | `SANDBOX_ESCAPE` | mach port / task / VM 跨边界能力组合 |
-| `RCE` | `blr`（函数指针）间接调用点 |
+| `RCE` | 认证/未认证间接调用点（`braa` / `blr`） |
 | `RACE` / `UAF` | 加解锁失衡，且伴随释放/引用计数操作 |
+| `PAC_BYPASS` | **arm64e**：`xpac` 签名剥离、未认证 `blr` 间接调用（函数指针未签名） |
+| `PAC_DOWNGRADE` | **arm64e**：整个 kext 无 PAC 指令，疑似降级编译 / 未启用指针认证 |
+| `PAC_SIGN_MISMATCH` | **arm64e**：A/B 密钥混用、签名后无验证 |
+| `FORMAT_STRING` | 用户可控格式串（`sprintf` / `os_log` + `%s`/`%n`） |
+| `UNINITIALIZED` | 分配后未经清零即 `copyout` 外传内核堆内容 |
+| `TOCTOU` | 同一函数多次 `copyin`（double-fetch 检查-使用竞态） |
+| `STACK_OVERFLOW` | `strcpy`/`sprintf`/`alloca` 无界栈操作与尺寸字段共现 |
+| `TYPE_CONFUSION` | 对象强制转换缺少动态类型校验 |
 
 每条 finding 带 `assembly`（`地址: 指令 目标`）、`vuln_class`、`symbol`、证据和置信度。多目标时每条 finding 的 `target` 字段标明来源 kext。`report.html` 是自包含的单文件，可直接用浏览器打开，详细线索可折叠。
 
+### arm64e PAC 专项
+
+r2 后端会额外采集 **PAC 指令**（认证分支 `braa`/`blraa`/`retaa`、签名 `pacia`、验证 `autia`、剥离 `xpaci`、BTI 等）到每个函数的 `pac_sites`，由 `pac-security` 插件据此判断绕过面。判断依据都是**可复核的指令证据**：
+
+- 有 `xpaci`/`xpacd` → 签名被剥离，是绕过 PAC 的经典前置
+- 有 `blr` 间接调用、全 kext 却无 `braa`/`blraa` 认证分支 → 函数指针未签名
+- 全 kext 零 PAC 指令 → 疑似降级编译（PAC 未启用，利用门槛降低）
+- A/B 密钥族混用、签名无验证 → 密钥空间误用
+
+> 说明：PAC 静态检测定位的是**绕过面与降级迹象**，不如动态 PAC 违例那样确定，每条都标注置信度，需人工复核指针来源与签名约定。
+
 ## 插件与测试
 
-内置：`vuln-primitives`、`pointer-safety`、`taint-sink`、`lock-balance`、`api-risk`、`surface-props`、`hook-observation`。
+内置：`vuln-primitives`、`pointer-safety`、`pac-security`、`advanced-threats`、`taint-sink`、`lock-balance`、`api-risk`、`surface-props`、`hook-observation`。
 
 分析过程默认显示**实时进度条**，动态更新已发现的疑似漏洞数量；用 `--no-progress` 关闭。
 

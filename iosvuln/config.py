@@ -27,8 +27,8 @@ class Config:
     targets: List[str] = field(default_factory=lambda: list(DEFAULT_TARGETS))
     plugins: List[str] = field(
         default_factory=lambda: [
-            "vuln-primitives", "pointer-safety", "taint-sink", "lock-balance",
-            "api-risk", "surface-props", "hook-observation",
+            "vuln-primitives", "pointer-safety", "pac-security", "advanced-threats",
+            "taint-sink", "lock-balance", "api-risk", "surface-props", "hook-observation",
         ]
     )
     min_severity: str = "INFO"

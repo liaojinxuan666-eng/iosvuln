@@ -307,10 +307,29 @@ iosvuln run --kext-dir ./exported-kexts \
 | `INTEGER_OVERFLOW` | 尺寸计算与分配/拷贝组合 |
 | `PRIVILEGE_ESCALATION` | 外部方法、属性写入、`task_for_pid` 等内核能力入口 |
 | `SANDBOX_ESCAPE` | mach port / task / VM 跨边界能力组合 |
-| `RCE` | `blr`（函数指针）间接调用点 |
+| `RCE` | 认证/未认证间接调用点（`braa` / `blr`） |
 | `RACE` / `UAF` | 加解锁失衡，且伴随释放 / 引用计数操作 |
+| `PAC_BYPASS` | **arm64e**：`xpac` 签名剥离、未认证 `blr`（函数指针未签名） |
+| `PAC_DOWNGRADE` | **arm64e**：全 kext 无 PAC 指令，疑似降级编译 / 未启用指针认证 |
+| `PAC_SIGN_MISMATCH` | **arm64e**：A/B 密钥混用、签名后无验证 |
+| `FORMAT_STRING` | 用户可控格式串（`sprintf` / `os_log` 与 `%s`/`%n`） |
+| `UNINITIALIZED` | 分配后未清零即 `copyout`，泄露内核堆内容 |
+| `TOCTOU` | 同一函数多次 `copyin`（double-fetch） |
+| `STACK_OVERFLOW` | 无界栈操作与尺寸字段共现 |
+| `TYPE_CONFUSION` | 对象强制转换缺少类型校验 |
 
 每条 finding 带 `assembly`（`地址: 指令 目标`）、`vuln_class`、`symbol`、证据与置信度。多目标时 `target` 字段标明来源 kext。
+
+### arm64e PAC 分析
+
+当目标架构为 `arm64e` 时，r2 后端会把 PAC 指令单独收进每个函数的 `pac_sites`（认证分支 `braa`/`blraa`/`retaa`、签名 `pacia`、验证 `autia`、剥离 `xpaci`、BTI），`pac-security` 据此报告：
+
+- **签名剥离**：出现 `xpaci`/`xpacd`（绕过 PAC 的经典前置）
+- **未认证间接调用**：有 `blr` 但全 kext 无认证分支（函数指针未签名）
+- **PAC 降级**：全 kext 零 PAC 指令（疑似未启用指针认证）
+- **密钥/验证失衡**：A/B 密钥混用、签名无对应验证
+
+这些是基于可复核指令证据的**绕过面定位**，非动态 PAC 违例确认，每条带置信度，需人工复核指针来源与签名约定。非 arm64e 目标自动跳过 PAC 规则。
 
 **报告里的地址只是“值得优先看的位置”**，需要你用 r2 / IDA / 反编译器复核参数来源、边界检查与权限判断。报告明确声明不生成利用代码。
 

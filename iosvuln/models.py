@@ -60,6 +60,16 @@ class VulnClass(str, Enum):
     SANDBOX_ESCAPE = "SANDBOX_ESCAPE"
     RCE = "RCE"
     INFO_LEAK = "INFO_LEAK"
+    # arm64e PAC (pointer authentication) weakness classes
+    PAC_BYPASS = "PAC_BYPASS"                  # xpac 剥离签名 / 未认证间接调用
+    PAC_DOWNGRADE = "PAC_DOWNGRADE"            # arm64e 上 PAC 未启用 / 降级编译
+    PAC_SIGN_MISMATCH = "PAC_SIGN_MISMATCH"    # 签名/验证密钥不匹配或缺失
+    # broadened static classes
+    FORMAT_STRING = "FORMAT_STRING"            # 用户可控格式串
+    UNINITIALIZED = "UNINITIALIZED"            # 未初始化内存读/拷贝
+    TOCTOU = "TOCTOU"                          # double-fetch / 检查-使用竞态
+    STACK_OVERFLOW = "STACK_OVERFLOW"          # 栈上大缓冲 / 递归无界
+    TYPE_CONFUSION = "TYPE_CONFUSION"          # 对象类型未校验强制转换
     OTHER = "OTHER"
 
 
@@ -119,19 +129,20 @@ class Function:
     strings: List[str] = field(default_factory=list)
     complexity: int = 0
     call_sites: List[CallSite] = field(default_factory=list)
+    # arm64e pointer-authentication instructions (braa/blraa/xpaci/retaa/...).
+    # Kept separate from call_sites so the call-order heuristics stay clean.
+    pac_sites: List[CallSite] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
         data["call_sites"] = [site.render() for site in self.call_sites]
+        data["pac_sites"] = [site.render() for site in self.pac_sites]
         return data
 
 
-def _function_from_dict(data: Dict[str, Any]) -> Function:
-    """Rebuild a Function, tolerating call_sites serialized as strings."""
-    payload = dict(data)
-    sites = payload.pop("call_sites", []) or []
+def _parse_sites(value: Any) -> List[CallSite]:
     parsed: List[CallSite] = []
-    for site in sites:
+    for site in value or []:
         if isinstance(site, dict):
             parsed.append(CallSite(**site))
         else:
@@ -146,7 +157,19 @@ def _function_from_dict(data: Dict[str, Any]) -> Function:
                         target=parts[1] if len(parts) > 1 else "",
                     )
                 )
-    return Function(**payload, call_sites=parsed)
+    return parsed
+
+
+def _function_from_dict(data: Dict[str, Any]) -> Function:
+    """Rebuild a Function, tolerating sites serialized as strings."""
+    payload = dict(data)
+    sites = payload.pop("call_sites", []) or []
+    pac_sites = payload.pop("pac_sites", []) or []
+    return Function(
+        **payload,
+        call_sites=_parse_sites(sites),
+        pac_sites=_parse_sites(pac_sites),
+    )
 
 
 @dataclass

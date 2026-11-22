@@ -31,6 +31,16 @@ CLASS_INFO: Dict[str, tuple] = {
     "RACE": ("竞态条件", "#00838f"),
     "UAF": ("释放后使用", "#c62828"),
     "INFO_LEAK": ("信息泄露", "#1565c0"),
+    # arm64e PAC
+    "PAC_BYPASS": ("PAC 绕过 / 签名剥离", "#880e4f"),
+    "PAC_DOWNGRADE": ("PAC 降级 / 未启用", "#4a148c"),
+    "PAC_SIGN_MISMATCH": ("PAC 密钥/验证失衡", "#6a1b9a"),
+    # broadened static classes
+    "FORMAT_STRING": ("格式化字符串", "#e65100"),
+    "UNINITIALIZED": ("未初始化内存", "#1565c0"),
+    "TOCTOU": ("TOCTOU / 双重取数", "#00695c"),
+    "STACK_OVERFLOW": ("栈溢出风险", "#bf360c"),
+    "TYPE_CONFUSION": ("类型混淆", "#311b92"),
     "OTHER": ("其他", "#555"),
 }
 
