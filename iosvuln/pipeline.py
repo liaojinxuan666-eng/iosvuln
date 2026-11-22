@@ -15,6 +15,7 @@ from .ipswwrap import IpswTool, check_dependencies, parse_kexts
 from .models import AnalysisManifest, Finding, Kext, Layer, Severity, sort_findings
 from .plugins import AnalysisContext, instantiate
 from .r2_backend import R2Backend
+from .symbolicate import symbolicate_manifests
 from . import static_rules  # noqa: F401 - registers static plugins
 from .report import write_reports
 from .targets import Target, discover as discover_targets, select as select_targets
@@ -61,6 +62,7 @@ class Pipeline:
         self.progress = progress
         self.dep = check_dependencies(cfg)
         self.warnings: List[str] = []
+        self.observation_source: str = "unknown"  # none / collected / demo-fixture
         self.device = gather_device(cfg, self.dep)
         os.makedirs(cfg.workdir, exist_ok=True)
         self.home = Home(cfg.home)
@@ -96,8 +98,21 @@ class Pipeline:
             if candidate and os.path.exists(candidate):
                 extracted = load_extracted(candidate)
                 if extracted:
+                    self.observation_source = "collected"
                     return extracted
-        return load_observations(self._fixture("observations_demo.log"))
+        # DEMO mode only: fall back to the bundled synthetic observation log.
+        # Real analysis must NEVER silently use demo data — it produces fake
+        # hook-layer findings that look like genuine vulnerabilities.
+        if self.cfg.demo:
+            self.observation_source = "demo-fixture"
+            return load_observations(self._fixture("observations_demo.log"))
+        self.observation_source = "none"
+        self.warnings.append(
+            "未提供 --observations 且未找到采集日志：跳过 hook 观测层，"
+            "不使用演示数据（避免生成假线索）。如需动态层线索，"
+            "请用 iosvuln collect 采集后以 --observations 指定日志。"
+        )
+        return []
 
     def _choose_targets(self, kexts: Sequence[Kext], macho_files: Sequence[str]) -> List[Target]:
         discovered = discover_targets(kexts, macho_files)
@@ -116,6 +131,13 @@ class Pipeline:
         selected = select_targets(specs, discovered, max_targets=self.cfg.max_targets)
         if not selected:
             self.warnings.append("没有匹配到可分析目标，请运行 iosvuln targets 查看清单。")
+        else:
+            available_count = sum(1 for t in discovered if t.available)
+            if available_count > len(selected):
+                self.warnings.append(
+                    f"共发现 {available_count} 个可用目标，受 --max-targets={self.cfg.max_targets} "
+                    f"限制只分析前 {len(selected)} 个（并非全部）。"
+                )
         return selected
 
     # ---------------------------------------------------------------------- run
@@ -141,8 +163,16 @@ class Pipeline:
         acquired = acquisition.acquire()
         self.warnings.extend(acquisition.notes)
         if acquired is None:
-            self.warnings.append("未指定任何可用输入，改用 DEMO fixture。")
-            return self._run_demo()
+            # A real run with no usable input must NEVER fall back to the demo
+            # fixture — that silently fills the report with synthetic findings.
+            self.warnings.append(
+                "未找到任何可用输入（kernelcache/kext-dir/device/ipsw 均无效）："
+                "本次为真实模式，不使用 DEMO 数据，报告漏洞线索为 0。"
+                "请用 --kernelcache / --kext-dir 指定有效路径，或用 --from demo 显式体验演示数据。"
+            )
+            return self._finish(
+                [], [], self._load_observations(), {}, "unavailable", "", []
+            )
         if acquired.commands:
             artifacts["acquisition_commands"] = "\n".join(acquired.commands)
 
@@ -161,14 +191,46 @@ class Pipeline:
             if not kexts:
                 self.warnings.append("kext 清单为空，将只使用内置目标目录。")
         elif macho_files:
-            kexts = [
-                Kext(bundle_id=os.path.basename(p), path=p) for p in macho_files
-            ]
+            # A --kext-dir pointing at ONE big file that looks like a full
+            # kernelcache is not a single kext — it is the whole cache. Treat
+            # it like --kernelcache: enumerate kexts with ipsw so each kext is
+            # extracted and analysed on its own (small function sets, static
+            # rules and symbolication actually land). Otherwise keep the old
+            # "one Mach-O = one target" behaviour for genuine exported kexts.
+            single = macho_files[0] if len(macho_files) == 1 else ""
+            is_cache = bool(
+                single
+                and (
+                    "kernelcache" in os.path.basename(single).lower()
+                    or os.path.getsize(single) > 8 * 1024 * 1024
+                )
+            )
+            if is_cache and ipsw.available:
+                cache_kexts = ipsw.inventory(single, self.cfg.targets)
+                if cache_kexts:
+                    self.warnings.append(
+                        f"检测到单个完整 kernelcache，已展开为 {len(cache_kexts)} 个 kext "
+                        f"逐个分析（这是全量模式的正确路径）。"
+                    )
+                    kexts = cache_kexts
+                    source_cache = single
+                    macho_files = []  # force per-kext extraction below
+                else:
+                    self.warnings.append(
+                        "kernelcache 未能列出 kext，退回到单 Mach-O 整体分析。"
+                    )
+                    kexts = [
+                        Kext(bundle_id=os.path.basename(p), path=p) for p in macho_files
+                    ]
+            else:
+                kexts = [
+                    Kext(bundle_id=os.path.basename(p), path=p) for p in macho_files
+                ]
 
         selected = self._choose_targets(kexts, macho_files)
         r2 = R2Backend(self.cfg, self.dep)
         manifests: List[AnalysisManifest] = []
-        backend = "r2"
+        backend_counts: Dict[str, int] = {}
 
         for target in selected:
             macho = _macho_for_target(macho_files, target)
@@ -178,14 +240,32 @@ class Pipeline:
                 artifacts[f"target_kext_{target.name}"] = macho
             manifest = r2.build_manifest(target.bundle_id, macho) if macho else None
             if manifest is None:
+                # NEVER substitute demo data for a real analysis — that is how
+                # the same synthetic IOSurface fixture got replicated across
+                # all targets and produced 396 fake findings (132 fake HIGH).
+                reason = r2.last_error or "未提取到 Mach-O"
                 self.warnings.append(
-                    f"{target.bundle_id}: r2 不可用或未提取到 Mach-O，使用 DEMO fixture 代替。"
+                    f"{target.bundle_id}: 分析失败（{reason}），已跳过该目标，"
+                    "不使用 DEMO 数据代替。"
                 )
-                manifest = self._demo_manifest_for(target.bundle_id)
-                backend = "demo-fixture (fallback)"
+                manifest = AnalysisManifest(
+                    target=target.bundle_id,
+                    source_file=macho or "",
+                    metadata={"backend": "unavailable", "reason": reason},
+                )
+                backend_counts["unavailable"] = backend_counts.get("unavailable", 0) + 1
             else:
-                backend = manifest.metadata.get("backend", "r2")
+                name = manifest.metadata.get("backend", "r2")
+                backend_counts[name] = backend_counts.get(name, 0) + 1
             manifests.append(manifest)
+
+        backend = ", ".join(f"{k}:{v}" for k, v in sorted(backend_counts.items()))
+        analyzed = len(selected) - backend_counts.get("unavailable", 0)
+        if analyzed == 0 and selected:
+            self.warnings.append(
+                "所有目标均分析失败：没有真实数据可供分析，本次报告的漏洞线索为 0，"
+                "这不代表固件安全。请按失败原因修复后重跑。"
+            )
 
         artifacts["ellekit_tweak"] = generate_tweak(self.cfg.workdir)
         return self._finish(
@@ -204,6 +284,20 @@ class Pipeline:
         kernelcache: str,
         selected: List[Target],
     ) -> PipelineResult:
+        # Symbolicate BEFORE the plugins run: most rules match on readable
+        # symbol tokens (IOSurfaceLock, copyin, PAC mnemonics, ...), which are
+        # invisible when r2 hands us mangled names.  Idempotent, so a manifest
+        # that was already symbolicated is left untouched.
+        if not getattr(self.cfg, "no_symbolicate", False):
+            sym_stats = symbolicate_manifests(manifests)
+            if sym_stats.get("cpp") or sym_stats.get("swift") or sym_stats.get("addresses_resolved"):
+                self.warnings.append(
+                    f"符号化: C++ {sym_stats.get('cpp', 0)} / Swift {sym_stats.get('swift', 0)} "
+                    f"/ 地址解析 {sym_stats.get('addresses_resolved', 0)}"
+                )
+        else:
+            sym_stats = {"disabled": True}
+
         all_findings: List[Finding] = []
         total_steps = max(1, len(manifests) * len(self.cfg.plugins))
         step = 0
@@ -233,12 +327,31 @@ class Pipeline:
                                        step, total_steps, len(all_findings))
 
         seen = {f.id: f for f in all_findings}
+        # Cross-target de-duplication: when the same synthetic or repeated
+        # finding surfaces under several targets, collapse it to one entry and
+        # record how many targets it appeared in.  The key includes location
+        # and score so genuinely distinct findings (different addresses) are
+        # never merged away.
+        merged: Dict[tuple, Finding] = {}
+        dup_targets: Dict[tuple, set] = {}
+        for f in seen.values():
+            key = (f.title, f.symbol, f.location, f.vuln_class, round(f.score, 2))
+            if key in merged:
+                dup_targets[key].add(f.target)
+            else:
+                merged[key] = f
+                dup_targets[key] = {f.target}
+        for key, targets in dup_targets.items():
+            if len(targets) > 1:
+                merged[key].tags = list(merged[key].tags) + [
+                    f"appeared_in_{len(targets)}_targets"
+                ]
         min_rank = Severity.INFO.rank
         try:
             min_rank = Severity(self.cfg.min_severity.upper()).rank
         except ValueError:
             self.warnings.append(f"未知最低严重度 {self.cfg.min_severity!r}，使用 INFO。")
-        findings = [f for f in sort_findings(seen.values()) if f.severity.rank >= min_rank]
+        findings = [f for f in sort_findings(merged.values()) if f.severity.rank >= min_rank]
 
         discovered = discover_targets(kexts, ())
         meta = {
@@ -249,13 +362,18 @@ class Pipeline:
             "kernelcache": kernelcache or (manifests[0].source_file if manifests else ""),
             "backend": backend,
             "function_count": sum(len(m.functions) for m in manifests),
+            "identified_functions": sum(
+                int(m.metadata.get("analyzed_functions", 0)) for m in manifests
+            ),
             "manifest_count": len(manifests),
             "ipsw": self.dep.get("ipsw") or "missing",
             "r2": self.dep.get("r2") or ("r2pipe" if self.dep.get("r2pipe") else "missing"),
             "warnings": list(dict.fromkeys(self.warnings)),
             "observations": len(observations),
+            "observation_source": self.observation_source,
             "home": self.home.path if self.cfg.archive else "",
             "archived": self.cfg.archive,
+            "symbolication": sym_stats,
         }
         reports = write_reports(self.cfg.workdir, findings, kexts, meta)
         artifacts.update(reports)

@@ -110,9 +110,32 @@ def render_markdown(
         f"| 内核缓存 | `{meta.get('kernelcache', '')}` |",
         f"| 分析后端 | `{meta.get('backend', 'n/a')}` |",
         f"| 静态函数数 | {meta.get('function_count', 0)} |",
-        f"| 依赖状态 | ipsw={meta.get('ipsw', 'missing')}, r2={meta.get('r2', 'missing')} |",
-        "",
     ]
+    identified = int(meta.get("identified_functions", 0) or 0)
+    deep = int(meta.get("function_count", 0) or 0)
+    if identified > deep:
+        pct = (deep / identified * 100) if identified else 0.0
+        lines.append(
+            f"| 深度分析覆盖率 | {deep}/{identified} 函数（{pct:.1f}%，"
+            f"按符号价值优先选取） |"
+        )
+    lines.append(
+        f"| 依赖状态 | ipsw={meta.get('ipsw', 'missing')}, r2={meta.get('r2', 'missing')} |"
+    )
+    obs_src = meta.get("observation_source", "")
+    obs_label = {
+        "collected": "真实采集日志",
+        "demo-fixture": "演示数据（合成，非真实固件）",
+        "none": "未提供（hook 层已跳过）",
+    }.get(obs_src, "未知")
+    lines.append(f"| Hook 数据来源 | {obs_label}（{meta.get('observations', 0)} 条） |")
+    sym = meta.get("symbolication") or {}
+    if sym and not sym.get("disabled"):
+        lines.append(
+            f"| 符号化 | C++ {sym.get('cpp', 0)} / Swift {sym.get('swift', 0)} "
+            f"/ 地址解析 {sym.get('addresses_resolved', 0)} |"
+        )
+    lines.append("")
     env = meta.get("device", {}) or {}
     profile = env.get("profile", {}) or {}
     env_lines = [
@@ -225,8 +248,10 @@ def render_markdown(
             f"- **ID**: `{f.id}`",
             f"- **层级 / 目标**: {f.layer.value} / `{f.target}`",
             f"- **位置**: `{f.location}`",
-            f"- **评分 / 置信度**: {f.score:.0f} / {f.confidence:.2f}",
         ]
+        if f.mangled:
+            lines.append(f"- **原始符号**: `{f.mangled}`")
+        lines.append(f"- **评分 / 置信度**: {f.score:.0f} / {f.confidence:.2f}")
         if f.cwe:
             lines.append(f"- **分类**: {f.cwe}")
         if f.description:
@@ -401,6 +426,8 @@ code{font-family:"SFMono-Regular",Consolas,Menlo,monospace;font-size:12px;color:
         add(f"<div class='kv'>ID <code>{esc(f.id)}</code> · 层级 {esc(f.layer.value)} · "
             f"目标 <code>{esc(f.target)}</code> · 评分 {f.score:.0f} · 置信度 {f.confidence:.2f}</div>")
         add(f"<div class='kv'>位置 <code>{esc(f.location)}</code></div>")
+        if f.mangled:
+            add(f"<div class='kv'>原始符号 <code>{esc(f.mangled)}</code></div>")
         if f.cwe:
             add(f"<div class='kv'>分类 {esc(f.cwe)}</div>")
         if f.description:

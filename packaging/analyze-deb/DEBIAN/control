@@ -1,6 +1,6 @@
 Package: dev.iosvuln.analyze
 Name: iosvuln Analyzer
-Version: 0.1.1
+Version: 0.1.4
 Architecture: iphoneos-arm64
 Maintainer: iosvuln
 Description: Full iosvuln static-analysis engine for on-device use. Runs the complete Python analyzer on the iPhone with a persistent store at /var/mobile/iosvuln (collections, cache, reports, tweaks, logs). Reports vulnerability primitives by assembly address only; no PoC, no exploit. Requires python3 from Sileo; radare2 optional (DEMO fallback otherwise).

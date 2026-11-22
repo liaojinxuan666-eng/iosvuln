@@ -18,6 +18,8 @@ iosvuln scan --preset deep --full                 # 全部插件 + 全部目标
 
 `--from {auto,ipsw,device,kext,kernelcache,demo}` 指定数据来源（默认 auto 自动探测）；`--full` 全目标+全插件；`--preset {fast,pac,deep}` 切换分析档位。旧的 `info`/`targets`/`run` 子命令仍保留，供进阶分步使用。
 
+**全量分析整个 kernelcache 的正确方式**：`--kernelcache ./kernelcache --target all`（或 `--kext-dir` 指向单个完整 kernelcache，工具会自动识别并用 ipsw 展开成多个 kext 逐个分析）。不要只写 `--target 1`——那选的是内置目录第 1 项，在新版 iOS 上常是 `available=no` 的条目，会导致 `targets=0`。每个 kext 单独分析时函数集小、符号清晰，静态规则和符号化才能真正命中。可用 `--max-targets N` 控制分析数量（默认 12，`--full` 时 40）。
+
 ## 分析流程
 
 ```
@@ -49,8 +51,8 @@ pip3 install '.[r2]'      # 可选：r2pipe
 
 | deb | 作用 |
 | --- | --- |
-| `dev.iosvuln.analyze_0.1.1_iphoneos-arm64.deb` | **完整分析端**：整套 Python 引擎 + `iosvuln` 命令，手机本地即可跑全部分析 |
-| `dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb` | 采集器 `iosvuln-collect [路径]`，采集 kernelcache/kext + 设备信息 |
+| `dev.iosvuln.analyze_0.1.4_iphoneos-arm64.deb` | **完整分析端**：整套 Python 引擎 + `iosvuln` 命令，手机本地即可跑全部分析 |
+| `dev.iosvuln.collect_0.1.4_iphoneos-arm64.deb` | 采集器 `iosvuln-collect [路径]`，采集 kernelcache/kext + 设备信息 |
 | `dev.iosvuln.extract_0.1.1_iphoneos-arm64.deb` | 提取式 tweak（已编译 dylib），导出 `IOSurface.framework` 符号地址与机器码 |
 
 三者共用长期目录 `/var/mobile/iosvuln/`（collections/cache/reports/tweaks/logs/config.json），数据互通。
@@ -104,6 +106,12 @@ iosvuln history
 iosvuln run --home /data/iosvuln --workdir ./out    # 指定长期目录
 iosvuln run --no-archive --workdir ./out            # 关闭自动归档
 iosvuln run --no-progress --workdir ./out           # 关闭进度条（默认显示）
+iosvuln run --no-symbolicate --workdir ./out        # 关闭符号化（默认开启）
+
+# 符号化：demangle 单个符号 / 符号化整份 manifest
+iosvuln symbolize __ZN9IOSurface11setPropertyEP12OSDictionary
+iosvuln symbolize --manifest ./out/manifest.json --json
+iosvuln deps                                        # 查看内置 demangler 能力
 ```
 
 `--target` 支持：`all`/`*`（全量，受 `--max-targets` 限制）、`auto`/`catalog`（内置目录中高风险目标）、`1,3,5`（`iosvuln targets` 显示的编号）、任意 bundle id / 名称子串。
@@ -134,6 +142,23 @@ iosvuln run --no-progress --workdir ./out           # 关闭进度条（默认�
 | `TYPE_CONFUSION` | 对象强制转换缺少动态类型校验 |
 
 每条 finding 带 `assembly`（`地址: 指令 目标`）、`vuln_class`、`symbol`、证据和置信度。多目标时每条 finding 的 `target` 字段标明来源 kext。`report.html` 是自包含的单文件，可直接用浏览器打开，详细线索可折叠。
+
+> **数据来源真实性（重要）**：真实扫描**绝不回退到 DEMO 数据**——无论输入无效、kext 提取失败还是 r2 崩溃，失败目标都会被跳过并写明具体原因，绝不用合成的 `manifest_iosurface_demo.json` 顶替。历史上这里曾把同一份合成 IOSurface fixture 复制到所有目标，产生 `12×33=396` 条假 finding（含 132 条假 HIGH）；现已彻底切断。只有显式 `--from demo` 才使用合成数据，并在报告中标注「演示数据（合成，非真实固件）」。
+>
+> 报告「流水线概览」会显示：**分析后端**（如 `r2:1, unavailable:11`，一眼看出多少目标失败）、**Hook 数据来源**、**深度分析覆盖率**（如 `120/38211 函数`）。若所有目标失败，漏洞线索为 0 并明确警告「这不代表固件安全」——0 条表示没分析成功，而不是固件没问题。
+
+### 符号化（Symbolication）
+
+r2 从真实固件里取出的函数名是 **mangled** 的（如 `__ZN9IOSurface11setPropertyEP12OSDictionary`），而所有检测规则都按**可读符号**（`IOSurfaceLock`、`copyin`、PAC 助记符等）匹配。流水线在跑规则**之前**会自动符号化，把可读名写回 `Function.name`，让规则在真实固件上也能命中，而不仅是对着 demo fixture 生效。
+
+- **纯 Python、零外部依赖**：Itanium C++ ABI demangler（嵌套名、模板、构造/析构、运算符、cv 限定、替换）+ 启发式 Swift demangler + 裸地址→最近符号解析。设备上没有 `c++filt` / `swift-demangle` 也能工作。
+- **符号引导的深度分析**：r2 深度反汇编预算默认 400 个函数。在完整 kernelcache 上函数数以万计，因此会先按符号名价值打分，**优先深度分析高价值函数**（`externalMethod`/`copyin`/`IOSurfaceLock`/`mach_msg`、分配器、锁、PAC 原语等），而不是 __TEXT 开头的前 N 个桩函数。全量 kernelcache 也不会浪费预算。可用 `IOSVULN_MAX_FUNCTIONS` 调整。
+- **全量地址索引**：无论深度分析多少函数，都会保存**所有**函数的 name/address 轻量索引，因此指向未反汇编函数的调用目标也能解析成 `IOSurface::externalMethod(...)+0x8` 这样的可读形式。
+- **原始符号保留**：demangled 的名字显示在报告里，同时以「原始符号」字段保留编译器拼写，方便用 `grep` 在二进制里定位。
+- **幂等**：重复符号化已处理的 manifest 是无操作，流水线可无条件调用。
+- 用 `--no-symbolicate` 关闭；用 `iosvuln symbolize` 单独预览一个符号或符号化整份 `manifest.json`。
+
+> 说明：Swift demangler 是启发式的（Swift mangling 语法庞大且随版本变化），输出用于导航定位，不是规范签名；kext 分析以 C/C++ 符号为主，Swift 场景较少。C++ demangler 覆盖 XNU/IOKit 常见模式，无法解析的符号会原样保留，不会输出误导性内容。
 
 ### 逻辑漏洞与 Darwin / Apple Silicon 专项
 

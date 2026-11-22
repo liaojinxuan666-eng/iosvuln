@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .config import Config
 from .models import AnalysisManifest, CallSite, Function
@@ -21,6 +21,64 @@ INTERESTING_STRINGS = (
     "size", "property", "surface", "buffer", "alloc", "offset", "byte",
     "width", "height", "pixel", "key", "mach", "client", "heap",
 )
+
+# Static rules match on readable/demangled symbol tokens.  On a full
+# kernelcache r2 reports thousands of functions but we only disassemble a
+# bounded number deeply.  Ranking by these tokens makes sure the budget is
+# spent on security-relevant functions (IOKit external methods, copyin/out,
+# allocators, locks, PAC/Mach primitives) instead of the first N `_start`/
+# stub functions in __TEXT.  Higher score = disassembled first.
+_SYMBOL_WEIGHTS: Tuple[Tuple[str, int], ...] = (
+    # IOKit user-client attack surface (highest value for these rules)
+    ("externalmethod", 10), ("setproperty", 9), ("getproperty", 9),
+    ("i surfac", 8), ("iosurface", 8), ("userclient", 8),
+    ("createn", 6), ("clientmemory", 6), ("mapmemory", 6),
+    # user-byte copy / bounds / allocation primitives
+    ("copyin", 9), ("copyout", 9), ("memcpy", 7), ("memmove", 7),
+    ("kalloc", 7), ("kfree", 6), ("iomal", 6), ("malloc", 5),
+    ("alloc", 4), ("vm_map", 5), ("vm_read", 5), ("vm_write", 5),
+    # locking / race primitives
+    ("lock", 4), ("unlock", 4), ("mutex", 4), ("spinlock", 4),
+    ("semaphore", 3), ("atomic", 3),
+    # Mach / IPC / entitlement primitives
+    ("mach_msg", 6), ("mach_port", 6), ("task_", 5), ("thread_", 4),
+    ("ipc_", 4), ("ioctl", 5), ("syscall", 5), (" entitlement", 5),
+    ("mig_", 4), ("dispatch", 2),
+    # PAC / control-flow / pointer safety
+    ("ptrauth", 5), ("pac_", 4), ("paciza", 4), ("braa", 4),
+    ("ktrr", 5), ("amfid", 5), ("cs_", 3), ("codesign", 4),
+    ("sandbox", 4), ("mac_", 3), ("hook", 3),
+    # generic demangled method bodies are still useful
+    ("::", 2),
+)
+
+
+def _symbol_score(name: str) -> int:
+    """Score a function name by how likely security rules will match it."""
+    lowered = (name or "").lower()
+    if not lowered:
+        return 0
+    score = 0
+    for token, weight in _SYMBOL_WEIGHTS:
+        if token in lowered:
+            score += weight
+    # Demangled names carry readable tokens; a bare sub_XXXX gets nothing.
+    return score
+
+
+def _prioritize(funcs: Sequence[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    """Pick the ``limit`` highest-value functions for deep disassembly.
+
+    Stable: ties keep the original r2 order.  When there are fewer functions
+    than the budget, everything is returned unchanged.
+    """
+    if limit <= 0 or len(funcs) <= limit:
+        return list(funcs)
+    ranked = sorted(
+        enumerate(funcs),
+        key=lambda pair: (-_symbol_score(str(pair[1].get("name") or pair[1].get("label") or "")), pair[0]),
+    )
+    return [item for _, item in ranked[:limit]]
 
 # arm64e pointer-authentication instruction families. These are collected into
 # Function.pac_sites (separate from ordinary calls) so PAC-specific rules can
@@ -72,13 +130,28 @@ class R2Backend:
             except ImportError:
                 pass
         self.binary = self.dep.get("r2")
+        # Reason for the most recent build_manifest failure. Lets the pipeline
+        # tell apart "r2 missing", "bad path", and "r2 crashed" instead of
+        # lumping them into one misleading warning.
+        self.last_error: str = ""
 
     @property
     def available(self) -> bool:
         return bool(self.binary or self._r2pipe_mod)
 
     def build_manifest(self, target: str, macho_path: str) -> Optional[AnalysisManifest]:
-        if not self.available or not macho_path or not os.path.exists(macho_path):
+        self.last_error = ""
+        if not self.available:
+            self.last_error = "r2 不可用（未找到 r2/r2pipe）"
+            return None
+        if not macho_path:
+            self.last_error = "未取得 Mach-O 路径"
+            return None
+        if not os.path.exists(macho_path):
+            self.last_error = f"Mach-O 路径不存在: {macho_path}"
+            return None
+        if os.path.isdir(macho_path):
+            self.last_error = f"路径是目录而非 Mach-O: {macho_path}"
             return None
         if self._r2pipe_mod:
             return self._with_r2pipe(target, macho_path)
@@ -93,7 +166,8 @@ class R2Backend:
             imports = self._imports_from_pipe(r2)
             strings = self._strings_from_pipe(r2)
             functions = []
-            for item in funcs_raw[:MAX_FUNCTIONS]:
+            selected = _prioritize(funcs_raw, MAX_FUNCTIONS)
+            for item in selected:
                 functions.append(
                     self._function_from_raw(r2, item, include_calls=True)
                 )
@@ -105,9 +179,16 @@ class R2Backend:
                 functions=functions,
                 imports=imports,
                 strings=strings,
-                metadata={"backend": "r2pipe", "analyzed_functions": len(funcs_raw)},
+                metadata={
+                    "backend": "r2pipe",
+                    "analyzed_functions": len(funcs_raw),
+                    "deep_functions": len(selected),
+                    "ranked": len(funcs_raw) > MAX_FUNCTIONS,
+                },
+                address_index=_address_index(funcs_raw),
             )
-        except Exception:  # r2 crashes on some compressed/objc-heavy caches
+        except Exception as exc:  # r2 crashes on some compressed/objc-heavy caches
+            self.last_error = f"r2pipe 分析异常: {type(exc).__name__}: {exc}"
             return None
 
     def _function_from_raw(self, r2: Any, item: Dict[str, Any], include_calls: bool) -> Function:
@@ -158,7 +239,8 @@ class R2Backend:
             funcs_raw = self._cmd_json(path, "aflj")
             imports_raw = self._cmd_json(path, "iij")
             strings_raw = self._cmd_json(path, "izzj")
-        except Exception:
+        except Exception as exc:
+            self.last_error = f"r2 subprocess 异常: {type(exc).__name__}: {exc}"
             return None
         imports = [str(x.get("name", "")) for x in imports_raw if x.get("name")]
         strings = [
@@ -167,7 +249,8 @@ class R2Backend:
             if any(w in str(s.get("string", "")).lower() for w in INTERESTING_STRINGS)
         ][:300]
         functions: List[Function] = []
-        for item in funcs_raw[:MAX_FUNCTIONS]:
+        selected = _prioritize(funcs_raw, MAX_FUNCTIONS)
+        for item in selected:
             fn = Function(
                 name=str(item.get("name") or item.get("label") or ""),
                 address=str(item.get("offset", "")),
@@ -189,7 +272,13 @@ class R2Backend:
             functions=functions,
             imports=imports,
             strings=strings,
-            metadata={"backend": "r2-subprocess", "analyzed_functions": len(funcs_raw)},
+            metadata={
+                "backend": "r2-subprocess",
+                "analyzed_functions": len(funcs_raw),
+                "deep_functions": len(selected),
+                "ranked": len(funcs_raw) > MAX_FUNCTIONS,
+            },
+            address_index=_address_index(funcs_raw),
         )
 
     def _cmd_json(self, path: str, command: str) -> List[Dict[str, Any]]:
@@ -212,6 +301,23 @@ def _as_list(value: Any) -> List[Dict[str, Any]]:
     if isinstance(value, list):
         return [x for x in value if isinstance(x, dict)]
     return []
+
+
+def _address_index(funcs_raw: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """Build a lightweight name/address index over *all* r2 functions.
+
+    Only the first ``MAX_FUNCTIONS`` are disassembled deeply, but bare call
+    targets can point anywhere in the binary.  Keeping every function entry
+    lets the symbolicate layer resolve those targets to the nearest symbol
+    without paying the cost of disassembling thousands of functions.
+    """
+    index: List[Dict[str, str]] = []
+    for item in funcs_raw:
+        name = str(item.get("name") or item.get("label") or "")
+        addr = item.get("offset")
+        if name and addr is not None and str(addr) != "":
+            index.append({"address": str(addr), "name": name})
+    return index
 
 
 def _calls_from_pdf(pdf: Any) -> Tuple[List[str], int, List[CallSite], List[CallSite]]:

@@ -20,6 +20,21 @@ from .models import Kext
 BUNDLE_RE = re.compile(r"(?:com|org)\.apple\.[A-Za-z0-9._-]+")
 VERSION_RE = re.compile(r"\b(\d+\.\d+(?:\.\d+)?(?:[a-z]\d*)?)\b", re.IGNORECASE)
 
+_MACHO_MAGICS = frozenset({
+    b"\xcf\xfa\xed\xfe", b"\xfe\xed\xfa\xcf",  # 64-bit
+    b"\xfe\xed\xfa\xce", b"\xce\xfa\xed\xfe",  # 32-bit
+    b"\xca\xfe\xba\xbe", b"\xbe\xba\xfe\xca",  # FAT
+    b"\xca\xfe\xba\xbf", b"\xbf\xba\xfe\xca",  # FAT64
+})
+
+
+def _has_macho_magic(path: str) -> bool:
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(4) in _MACHO_MAGICS
+    except OSError:
+        return False
+
 
 @dataclass
 class CommandResult:
@@ -254,6 +269,12 @@ class IpswTool:
         return []
 
     def extract_kext(self, kernelcache: str, bundle_id: str) -> Optional[str]:
+        """Extract one kext Mach-O; return None on ANY failure.
+
+        Returning the output directory on failure was a serious bug: a
+        directory was handed to r2, which crashed, and the resulting warning
+        blamed "r2 analysis" instead of the real extraction failure.
+        """
         if not self.available:
             return None
         out_dir = os.path.join(self.cfg.workdir, "kexts", bundle_id.replace("/", "_"))
@@ -263,13 +284,14 @@ class IpswTool:
         )
         if not res.ok:
             return None
-        machos = [
-            os.path.join(root, f)
-            for root, _dirs, files in os.walk(out_dir)
-            for f in files
-            if f.endswith((".macho", ".dylib", ".bin")) or f == bundle_id.rsplit(".", 1)[-1]
-        ]
-        return machos[0] if machos else out_dir
+        machos: List[str] = []
+        for root, _dirs, files in os.walk(out_dir):
+            for f in files:
+                full = os.path.join(root, f)
+                if f.endswith((".macho", ".dylib", ".bin")) or _has_macho_magic(full):
+                    machos.append(full)
+        # Only return a real Mach-O file — never the directory itself.
+        return machos[0] if machos else None
 
     def inventory(self, kernelcache: str, targets: List[str]) -> List[Kext]:
         """Full kext list, with target ones first and flagged."""

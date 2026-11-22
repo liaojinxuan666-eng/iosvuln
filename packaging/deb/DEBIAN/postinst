@@ -1,6 +1,17 @@
 #!/bin/bash
 set -e
 mkdir -p /var/mobile/iosvuln
-chmod 0755 /usr/bin/iosvuln-collect /usr/lib/iosvuln/collect.sh 2>/dev/null || true
+
+# Rootless installs under /var/jb/usr; rootful under /usr.
+JB=""
+for candidate in /var/jb /; do
+  if [ -d "$candidate/usr/lib/iosvuln" ]; then
+    JB="$candidate"
+    break
+  fi
+done
+BIN_DIR="${JB}/usr/bin"
+LIB_DIR="${JB}/usr/lib/iosvuln"
+chmod 0755 "$BIN_DIR/iosvuln-collect" "$LIB_DIR/collect.sh" 2>/dev/null || true
 chown -R mobile:mobile /var/mobile/iosvuln 2>/dev/null || true
 exit 0

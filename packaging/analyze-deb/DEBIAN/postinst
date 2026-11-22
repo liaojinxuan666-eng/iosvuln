@@ -1,12 +1,23 @@
 #!/bin/bash
 set -e
 
-# Launcher + Python package live under /usr/lib/iosvuln (rootless: /var/jb/usr/lib/iosvuln)
-chmod 0755 /usr/bin/iosvuln 2>/dev/null || true
+# Rootless jailbreak: the package is installed under /var/jb/usr, NOT /usr.
+# On rootful devices /var/jb/usr may be a symlink target, but we detect both.
+JB=""
+for candidate in /var/jb /; do
+  if [ -d "$candidate/usr/lib/iosvuln" ]; then
+    JB="$candidate"
+    break
+  fi
+done
+
+BIN_DIR="${JB}/usr/bin"
+LIB_DIR="${JB}/usr/lib/iosvuln"
+chmod 0755 "$BIN_DIR/iosvuln" 2>/dev/null || true
 
 # Initialize the COMPLETE persistent store with the exact same layout as the
 # host tool. Reuse the tool itself so the structure never drifts.
-export PYTHONPATH="/usr/lib/iosvuln${PYTHONPATH:+:$PYTHONPATH}"
+export PYTHONPATH="${LIB_DIR}${PYTHONPATH:+:$PYTHONPATH}"
 if command -v python3 >/dev/null 2>&1; then
   python3 -m iosvuln.cli home --init >/dev/null 2>&1 || true
 else
@@ -16,10 +27,13 @@ else
            "$BASE/tweaks" "$BASE/logs"
 fi
 
-# Wire zsh shortcuts into root and mobile shells (idempotent, one line each).
-SHORTCUT='source /usr/lib/iosvuln/iosvuln.zsh'
+# Wire zsh shortcuts into root and mobile shells (idempotent).
+# Remove any stale rootful line first, then add the resolved path.
 for rc in /var/root/.zshrc /var/mobile/.zshrc; do
   [ -f "$rc" ] || touch "$rc" 2>/dev/null || continue
+  sed -i '' '/source \/usr\/lib\/iosvuln\/iosvuln\.zsh/d' "$rc" 2>/dev/null || \
+    sed -i '/source \/usr\/lib\/iosvuln\/iosvuln\.zsh/d' "$rc" 2>/dev/null || true
+  SHORTCUT="source ${LIB_DIR}/iosvuln.zsh"
   grep -Fqx "$SHORTCUT" "$rc" 2>/dev/null || echo "$SHORTCUT" >> "$rc" 2>/dev/null || true
 done
 chown -R mobile:mobile /var/mobile/iosvuln 2>/dev/null || true

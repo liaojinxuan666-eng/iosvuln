@@ -305,6 +305,19 @@ iosvuln run --kext-dir ./exported-kexts \
 | `--observations <file>` | hook 采集的日志 / 提取式 JSON |
 | `--interactive` | 交互式选择目标 |
 | `--quiet` | 只打印报告路径 |
+| `--no-symbolicate` | 关闭符号化（默认开启，见下） |
+
+### 符号化
+
+真实固件里 r2 取出的函数名是 mangled 的（`__ZN9IOSurface11setPropertyE...`），而规则都按可读符号匹配。**流水线默认在跑规则前自动符号化**：内置纯 Python 的 Itanium C++ / 启发式 Swift demangler，外加裸地址→最近符号解析（用 r2 返回的**全量**函数地址索引，指向未反汇编函数的调用目标也能解析）。符号化结果写回 `Function.name`，所以规则在真机上也能命中。报告同时保留「原始符号」字段便于 grep。
+
+```bash
+iosvuln symbolize __ZN9IOSurface11setPropertyEP12OSDictionary   # 预览单个符号
+iosvuln symbolize --manifest ./out/manifest.json --json         # 符号化整份 manifest
+iosvuln deps                                                    # 查看 demangler 能力
+```
+
+符号化是幂等的、无需外部工具（`c++filt` / `swift-demangle` 都不依赖）。Swift demangler 为启发式实现，输出用于导航而非规范签名；C++ 无法解析的符号原样保留。
 
 ---
 
@@ -520,12 +533,14 @@ iosvuln hook-scaffold  生成 ElleKit tweak 工程源码
 iosvuln home           查看/初始化长期存储目录（--init / --json）
 iosvuln import <file>  导入采集文件到长期存储（--kind 指定类型）
 iosvuln history        列出历史归档报告（--limit / --json）
-iosvuln deps           检查 ipsw / r2 / r2pipe 可用性
+iosvuln deps           检查 ipsw / r2 / r2pipe 可用性（含符号化能力）
 iosvuln plugins        列出已注册分析插件
+iosvuln symbolize <符号>          demangle 单个符号（--json 输出 JSON）
+iosvuln symbolize --manifest <f> 符号化整份 manifest.json（--out 指定输出）
 iosvuln --version      显示版本
 ```
 
-`run` / `demo` 常用：`--home <dir>` 指定长期目录、`--no-archive` 关闭归档、`--no-progress` 关闭实时进度条与漏洞计数（默认开启，边分析边显示已发现的疑似漏洞数）。
+`run` / `demo` 常用：`--home <dir>` 指定长期目录、`--no-archive` 关闭归档、`--no-progress` 关闭实时进度条与漏洞计数（默认开启，边分析边显示已发现的疑似漏洞数）、`--no-symbolicate` 关闭符号化（默认开启）。
 
 分析完成后查看 HTML 报告：`open <workdir>/report.html`（macOS）或直接在浏览器/文件管理器打开。
 

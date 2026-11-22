@@ -190,13 +190,16 @@ def _id(plugin: str, manifest: AnalysisManifest, fn: Function, title: str) -> st
 
 
 def _base_kwargs(plugin: str, manifest: AnalysisManifest, fn: Function, title: str) -> Dict:
-    return {
+    kwargs = {
         "id": _id(plugin, manifest, fn, title),
         "title": title,
         "layer": Layer.STATIC,
         "target": manifest.target,
         "location": f"{fn.name} @ {fn.address}" if fn.address else fn.name,
     }
+    if fn.mangled:
+        kwargs["mangled"] = fn.mangled
+    return kwargs
 
 
 class _RulePlugin(Plugin):

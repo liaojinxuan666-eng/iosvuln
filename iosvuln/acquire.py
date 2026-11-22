@@ -147,11 +147,42 @@ class Acquisition:
         return AcquisitionResult(mode="ipsw", kernelcache=path, notes=["由 IPSW 提取 kernelcache"])
 
 
+# Mach-O file magic (little-endian byte sequences at offset 0). ipsw exports
+# kexts as bundle ids such as ``com.apple.iokit.IOSurface`` — a dotted name
+# with no recognised extension — so extension-based filtering silently drops
+# them. Sniffing the magic header is the only reliable test.
+_MACHO_MAGICS = frozenset({
+    b"\xcf\xfa\xed\xfe",  # MH_MAGIC_64  (arm64/x86_64)
+    b"\xfe\xed\xfa\xcf",  # MH_CIGAM_64
+    b"\xfe\xed\xfa\xce",  # MH_MAGIC (32-bit)
+    b"\xce\xfa\xed\xfe",  # MH_CIGAM (32-bit)
+    b"\xca\xfe\xba\xbe",  # FAT_MAGIC
+    b"\xbe\xba\xfe\xca",  # FAT_CIGAM
+    b"\xca\xfe\xba\xbf",  # FAT_MAGIC_64
+    b"\xbf\xba\xfe\xca",  # FAT_CIGAM_64
+})
+
+
+def _is_macho(path: str) -> bool:
+    """True when the file starts with a Mach-O / FAT magic header."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4)
+    except OSError:
+        return False
+    return head in _MACHO_MAGICS
+
+
 def _macho_files(root: str) -> List[str]:
     found: List[str] = []
     for path in glob.glob(os.path.join(root, "**", "*"), recursive=True):
         if not os.path.isfile(path):
             continue
-        if path.endswith((".macho", ".dylib", ".bin", ".kext")) or "." not in os.path.basename(path):
+        # Prefer magic sniffing; fall back to the old extension/name heuristic
+        # for files we cannot open (so a transient permission error does not
+        # silently drop a legitimate target).
+        if _is_macho(path):
+            found.append(path)
+        elif path.endswith((".macho", ".dylib", ".bin", ".kext")):
             found.append(path)
     return sorted(found)[:200]

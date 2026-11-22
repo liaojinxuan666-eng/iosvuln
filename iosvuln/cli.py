@@ -59,6 +59,16 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("deps", help="检查 ipsw / r2 / r2pipe 可用性")
     sub.add_parser("plugins", help="列出已注册分析插件")
 
+    sym = sub.add_parser(
+        "symbolize",
+        help="符号化：demangle 单个符号，或对 manifest.json 做地址→符号解析",
+        description="符号化单个符号或整个 manifest。示例：iosvuln symbolize __ZN9IOSurface11setPropertyEP12OSDictionary",
+    )
+    sym.add_argument("symbol", nargs="?", default="", help="单个 mangled 符号（demangle 预览）")
+    sym.add_argument("--manifest", default="", help="manifest.json 路径，符号化后写出")
+    sym.add_argument("--out", default="", help="--manifest 的输出路径（默认覆盖 <manifest>.symbolicated.json）")
+    sym.add_argument("--json", action="store_true", help="以 JSON 输出结果")
+
     info = sub.add_parser("info", help="探测设备/环境信息（名称、系统版本、架构）")
     _add_acquire_args(info)
     info.add_argument("--collection", default="", help="设备端 collection.json 路径")
@@ -121,6 +131,8 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--home", default="", help="长期存储目录（默认 ~/.iosvuln，可用 IOSVULN_HOME）")
     parser.add_argument("--no-archive", action="store_true", help="不把报告归档到长期存储目录")
     parser.add_argument("--no-progress", action="store_true", help="关闭实时进度条与漏洞计数")
+    parser.add_argument("--no-symbolicate", action="store_true",
+                        help="跳过符号化（demangle / 地址→符号解析）")
     parser.add_argument("--quiet", action="store_true", help="只输出报告路径")
 
 
@@ -142,6 +154,7 @@ def _config_from_args(args: argparse.Namespace, demo: bool = False) -> Config:
         demo=demo or getattr(args, "demo", False),
         home=getattr(args, "home", "") or "",
         archive=not getattr(args, "no_archive", False),
+        no_symbolicate=getattr(args, "no_symbolicate", False),
     )
 
 
@@ -239,12 +252,51 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if command == "deps":
         status = check_dependencies(Config())
+        status["symbolication"] = {
+            "cpp_demangler": "builtin (Itanium ABI, pure Python)",
+            "swift_demangler": "builtin (heuristic, pure Python)",
+            "address_resolution": "manifest address_index",
+            "external_tools_required": False,
+        }
         print(json.dumps(status, indent=2, ensure_ascii=False, default=str))
         return 0
 
     if command == "plugins":
         for name, description in list_plugins().items():
             print(f"  {name:18} {description}")
+        return 0
+
+    if command == "symbolize":
+        from .models import AnalysisManifest
+        from .symbolicate import demangle, symbolicate_manifest
+
+        if args.manifest:
+            with open(args.manifest, "r", encoding="utf-8") as handle:
+                manifest = AnalysisManifest.from_json(handle.read())
+            stats = symbolicate_manifest(manifest)
+            out = args.out or (args.manifest + ".symbolicated.json")
+            with open(out, "w", encoding="utf-8") as handle:
+                handle.write(manifest.to_json())
+            if args.json:
+                print(json.dumps({"out": out, "stats": stats.to_dict()},
+                                 ensure_ascii=False, indent=2))
+            else:
+                print(f"符号化完成 -> {out}")
+                print(f"  C++ {stats.cpp} / Swift {stats.swift} / 地址解析 {stats.addresses_resolved} "
+                      f"/ 调用目标 demangle {stats.targets_demangled}")
+            return 0
+
+        if not args.symbol:
+            print("用法: iosvuln symbolize <符号>  或  iosvuln symbolize --manifest <file.json>",
+                  file=sys.stderr)
+            return 1
+        readable, kind = demangle(args.symbol)
+        if args.json:
+            print(json.dumps({"input": args.symbol, "output": readable, "kind": kind},
+                             ensure_ascii=False, indent=2))
+        else:
+            print(f"[{kind}] {args.symbol}")
+            print(f"     -> {readable}")
         return 0
 
     if command == "info":

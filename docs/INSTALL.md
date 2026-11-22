@@ -95,8 +95,8 @@ python3 -m pip uninstall iosvuln
 
 | 文件 | 作用 | 是否必须 |
 | --- | --- | --- |
-| `dev.iosvuln.analyze_0.1.1_iphoneos-arm64.deb` | **完整分析端**：把整套 Python 引擎装到手机，提供 `iosvuln` 命令 | 想在手机上直接分析时装 |
-| `dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb` | 设备侧采集器 `iosvuln-collect` | 采集内核数据时装 |
+| `dev.iosvuln.analyze_0.1.4_iphoneos-arm64.deb` | **完整分析端**：把整套 Python 引擎装到手机，提供 `iosvuln` 命令 | 想在手机上直接分析时装 |
+| `dev.iosvuln.collect_0.1.4_iphoneos-arm64.deb` | 设备侧采集器 `iosvuln-collect` | 采集内核数据时装 |
 | `dev.iosvuln.extract_0.1.1_iphoneos-arm64.deb` | 提取式 tweak（已编译 dylib），导出符号地址与机器码 | 想导出符号地址时装 |
 
 > **`analyze` 是完整分析端**：装了它，iPhone 自己就能跑 `iosvuln run / demo / home / import / history` 等全部命令，不用再依赖电脑。它和 `collect`、`extract` 共用同一个长期目录 `/var/mobile/iosvuln/`，三者数据互通。
@@ -230,7 +230,7 @@ rm -rf /var/mobile/iosvuln
 ```bash
 # 手动触发（需仓库写权限的 token）
 gh api repos/liaojinxuan666-eng/iosvuln/actions/workflows/build-release.yml/dispatches \
-  -f ref=main -F 'inputs[tag]=v0.1.2'
+  -f ref=main -F 'inputs[tag]=v0.1.6'   # 用实际要发布的 tag 替换
 ```
 
 工作流会：装 Theos + iOS SDK → 编译提取式 tweak → 打包采集器 deb → 压缩源码 → 发布到 Release。产物见 Release 页面。
@@ -239,7 +239,7 @@ gh api repos/liaojinxuan666-eng/iosvuln/actions/workflows/build-release.yml/disp
 
 ```bash
 bash packaging/build_deb.sh
-# 输出 packaging/dev.iosvuln.collect_0.1.1_iphoneos-arm64.deb
+# 输出 packaging/dev.iosvuln.collect_0.1.4_iphoneos-arm64.deb
 ```
 
 本地编译 tweak 才需要 Theos + iOS SDK：

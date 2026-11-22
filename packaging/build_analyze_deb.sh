@@ -5,7 +5,8 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 DEB="$ROOT/packaging/analyze-deb"
-APP="$DEB/usr/lib/iosvuln"
+# Rootless layout: files install under /var/jb/usr, never /usr (read-only).
+APP="$DEB/var/jb/usr/lib/iosvuln"
 OUT="$ROOT/packaging"
 
 # Clean stale copies from a previous build.
@@ -21,9 +22,9 @@ cp "$ROOT/README.md" "$APP/README.md" 2>/dev/null || true
 
 # zsh shortcut file is a hand-maintained source file (not generated), keep it.
 
-chmod 0755 "$DEB/DEBIAN/postinst" "$DEB/usr/bin/iosvuln"
+chmod 0755 "$DEB/DEBIAN/postinst" "$DEB/var/jb/usr/bin/iosvuln"
 chmod 0644 "$DEB/DEBIAN/control"
 
-dpkg-deb --build --root-owner-group "$DEB" "$OUT/dev.iosvuln.analyze_0.1.1_iphoneos-arm64.deb"
-echo "built: $OUT/dev.iosvuln.analyze_0.1.1_iphoneos-arm64.deb"
-dpkg-deb -I "$OUT/dev.iosvuln.analyze_0.1.1_iphoneos-arm64.deb" | head -20
+dpkg-deb --build --root-owner-group "$DEB" "$OUT/dev.iosvuln.analyze_0.1.4_iphoneos-arm64.deb"
+echo "built: $OUT/dev.iosvuln.analyze_0.1.4_iphoneos-arm64.deb"
+dpkg-deb -I "$OUT/dev.iosvuln.analyze_0.1.4_iphoneos-arm64.deb" | head -20

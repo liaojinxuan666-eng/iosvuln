@@ -80,6 +80,10 @@ class CallSite:
     address: str
     mnemonic: str = "bl"
     target: str = ""
+    # Original target before symbolication (a raw address or mangled name).
+    # Kept so evidence lines can show both the readable symbol and the exact
+    # bytes/r2 token an analyst would grep for.
+    raw_target: str = ""
 
     def render(self) -> str:
         return f"{self.address}: {self.mnemonic} {self.target}".strip()
@@ -132,6 +136,10 @@ class Function:
     # arm64e pointer-authentication instructions (braa/blraa/xpaci/retaa/...).
     # Kept separate from call_sites so the call-order heuristics stay clean.
     pac_sites: List[CallSite] = field(default_factory=list)
+    # Original mangled name, preserved when ``name`` has been demangled.
+    mangled: str = ""
+    # Demangler provenance: cpp / swift / objc / plain.
+    symbol_source: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         data = asdict(self)
@@ -188,6 +196,10 @@ class AnalysisManifest:
     imports: List[str] = field(default_factory=list)
     strings: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # Lightweight name/address index for ALL recovered functions (not only the
+    # deeply-analyzed subset).  Used by symbolication to resolve bare call
+    # targets to the nearest symbol even when the callee was not disassembled.
+    address_index: List[Dict[str, str]] = field(default_factory=list)
 
     def function_by_name(self, name: str) -> Optional[Function]:
         for fn in self.functions:
@@ -204,6 +216,7 @@ class AnalysisManifest:
             "imports": self.imports,
             "strings": self.strings,
             "metadata": self.metadata,
+            "address_index": self.address_index,
         }
 
     def to_json(self, indent: int = 2) -> str:
@@ -220,6 +233,11 @@ class AnalysisManifest:
             imports=list(data.get("imports", [])),
             strings=list(data.get("strings", [])),
             metadata=dict(data.get("metadata", {})),
+            address_index=[
+                {"address": str(x.get("address", "")), "name": str(x.get("name", ""))}
+                for x in data.get("address_index", [])
+                if isinstance(x, dict)
+            ],
         )
 
 
@@ -241,6 +259,9 @@ class Finding:
     vuln_class: str = ""
     assembly: List[str] = field(default_factory=list)
     symbol: str = ""
+    # Original mangled symbol when ``symbol`` was demangled; shown in reports
+    # so an analyst can grep the binary with the exact compiler spelling.
+    mangled: str = ""
     recommendation: str = ""
     tags: List[str] = field(default_factory=list)
 

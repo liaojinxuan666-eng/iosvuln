@@ -1,0 +1,9 @@
+#!/bin/bash
+# Resolve collect.sh under rootless (/var/jb/usr) or rootful (/usr).
+for base in /var/jb/usr/lib/iosvuln /usr/lib/iosvuln; do
+  if [ -f "$base/collect.sh" ]; then
+    exec /bin/bash "$base/collect.sh" "$@"
+  fi
+done
+echo "iosvuln-collect: collect.sh not found" >&2
+exit 1

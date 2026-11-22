@@ -1,0 +1,15 @@
+2026-11-22 10:01:02.111 Demo[1234] [IOSVULN] hook installed
+2026-11-22 10:01:03.220 Demo[1234] [IOSVULN] IOSurfaceCreate pid=1234 proc=Demo id=772
+2026-11-22 10:01:03.221 Demo[1234] [IOSVULN] IOSurfaceGetBaseAddress pid=1234 addr=0x16f2a4000 allocSize=402653184 width=8192 height=6144
+2026-11-22 10:01:03.930 Demo[1234] [IOSVULN] IOSurfaceLock pid=1234 flags=0
+2026-11-22 10:01:03.940 Demo[1234] [IOSVULN] IOSurfaceLock pid=1234 flags=0
+2026-11-22 10:01:03.950 Demo[1234] [IOSVULN] IOSurfaceLock pid=1234 flags=0
+2026-11-22 10:01:03.960 Demo[1234] [IOSVULN] IOSurfaceLock pid=1234 flags=0
+2026-11-22 10:01:04.010 Demo[1234] [IOSVULN] IOSurfaceSetValue pid=1234 key=kIOSurfaceAllocSize value=402653184
+2026-11-22 10:01:04.011 Demo[1234] [IOSVULN] IOSurfaceSetValue pid=1234 key=kIOSurfaceAllocSize value=402653184
+2026-11-22 10:01:04.012 Demo[1234] [IOSVULN] IOSurfaceSetValue pid=1234 key=kIOSurfaceAllocSize value=402653184
+2026-11-22 10:01:04.013 Demo[1234] [IOSVULN] IOSurfaceSetValue pid=1234 key=kIOSurfaceAllocSize value=402653184
+2026-11-22 10:01:04.014 Demo[1234] [IOSVULN] IOSurfaceSetValue pid=1234 key=kIOSurfaceAllocSize value=402653184
+2026-11-22 10:01:04.015 Demo[1234] [IOSVULN] IOSurfaceSetValue pid=1234 key=kIOSurfaceAllocSize value=402653184
+2026-11-22 10:01:04.016 Demo[1234] [IOSVULN] IOSurfaceSetValue pid=1234 key=kIOSurfaceAllocSize value=402653184
+2026-11-22 10:01:04.017 Demo[1234] [IOSVULN] IOSurfaceSetValue pid=1234 key=kIOSurfaceAllocSize value=402653184

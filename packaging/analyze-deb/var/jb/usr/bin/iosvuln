@@ -5,16 +5,17 @@
 
 set -e
 
-# Locate the installed Python package (rootless remaps /usr to /var/jb/usr).
+# Locate the installed Python package. Rootless installs under /var/jb/usr;
+# rootful under /usr. Probe both so the launcher works on either scheme.
 PKG_DIR=""
-for candidate in /usr/lib/iosvuln /var/jb/usr/lib/iosvuln; do
+for candidate in /var/jb/usr/lib/iosvuln /usr/lib/iosvuln; do
   if [ -d "$candidate/iosvuln" ]; then
     PKG_DIR="$candidate"
     break
   fi
 done
 if [ -z "$PKG_DIR" ]; then
-  echo "iosvuln: Python package not found under /usr/lib/iosvuln" >&2
+  echo "iosvuln: Python package not found under /var/jb/usr/lib/iosvuln or /usr/lib/iosvuln" >&2
   exit 1
 fi
 

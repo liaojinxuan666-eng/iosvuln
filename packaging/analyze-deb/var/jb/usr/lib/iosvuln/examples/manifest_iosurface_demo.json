@@ -1,0 +1,206 @@
+{
+  "target": "com.apple.driver.IOSurface",
+  "source_file": "kernelcache.decompressed (demo fixture)",
+  "arch": "arm64e",
+  "functions": [
+    {
+      "name": "IOSurface::setProperty(OSDictionary*)",
+      "address": "0xfffffff0065a1234",
+      "size": 864,
+      "calls": [
+        "copyin",
+        "memcpy",
+        "kalloc",
+        "IOLockLock",
+        "OSDictionary::setObject"
+      ],
+      "xrefs": [
+        "IOSurface::externalMethod"
+      ],
+      "strings": [
+        "kIOSurfaceAllocSize",
+        "width",
+        "height"
+      ],
+      "complexity": 17,
+      "call_sites": [
+        "0xfffffff0065a1250: bl _copyin",
+        "0xfffffff0065a1298: bl _kalloc",
+        "0xfffffff0065a12c4: bl _memcpy",
+        "0xfffffff0065a1308: bl _IOLockLock"
+      ]
+    },
+    {
+      "name": "IOSurface::externalMethod(uint32_t, IOExternalMethodArguments*)",
+      "address": "0xfffffff0065a4560",
+      "size": 1320,
+      "calls": [
+        "IOExternalMethodArguments",
+        "IOMalloc",
+        "memcpy",
+        "IOLockLock",
+        "IOLockUnlock",
+        "setProperty",
+        "copyin"
+      ],
+      "xrefs": [],
+      "strings": [
+        "selector",
+        "size"
+      ],
+      "complexity": 24,
+      "call_sites": [
+        "0xfffffff0065a4600: bl _IOMalloc",
+        "0xfffffff0065a4654: bl _memcpy",
+        "0xfffffff0065a46b0: blr x8",
+        "0xfffffff0065a4610: bl _copyin",
+        "0xfffffff0065a4630: bl _copyin"
+      ]
+    },
+    {
+      "name": "IOSurface::initWithProperties(OSDictionary*)",
+      "address": "0xfffffff0065a7800",
+      "size": 1104,
+      "calls": [
+        "copyin",
+        "OSDictionary::setObject",
+        "kalloc",
+        "memcpy",
+        "OSDynamicCast"
+      ],
+      "xrefs": [
+        "IOSurface::create"
+      ],
+      "strings": [
+        "kIOSurfaceWidth",
+        "kIOSurfaceHeight",
+        "kIOSurfaceBytesPerRow"
+      ],
+      "complexity": 15,
+      "call_sites": [
+        "0xfffffff0065a7820: bl _copyin",
+        "0xfffffff0065a7890: bl _kalloc",
+        "0xfffffff0065a78d8: bl _memcpy",
+        "0xfffffff0065a7850: bl _OSDynamicCast"
+      ]
+    },
+    {
+      "name": "IOSurface::getProperty(const char*)",
+      "address": "0xfffffff0065a9c20",
+      "size": 520,
+      "calls": [
+        "copyout",
+        "memcpy",
+        "IOLockLock",
+        "sprintf"
+      ],
+      "xrefs": [],
+      "strings": [
+        "property",
+        "buffer",
+        "size",
+        "%s",
+        "%d"
+      ],
+      "complexity": 9,
+      "call_sites": [
+        "0xfffffff0065a9c40: bl _copyout",
+        "0xfffffff0065a9c88: bl _memcpy",
+        "0xfffffff0065a9c50: bl _sprintf"
+      ]
+    },
+    {
+      "name": "IOSurface::handleMemory(IOMemoryDescriptor*)",
+      "address": "0xfffffff0065ab100",
+      "size": 760,
+      "calls": [
+        "IOMemoryDescriptor::withAddressRange",
+        "memmove",
+        "IOLockLock",
+        "IOLockUnlock",
+        "writeBytes"
+      ],
+      "xrefs": [],
+      "strings": [
+        "offset",
+        "size"
+      ],
+      "complexity": 13,
+      "call_sites": [
+        "0xfffffff0065ab140: bl _kalloc",
+        "0xfffffff0065ab168: bl _memcpy",
+        "0xfffffff0065ab190: bl _kfree",
+        "0xfffffff0065ab1b0: bl _memcpy",
+        "0xfffffff0065ab1d8: bl _kfree"
+      ],
+      "pac_sites": [
+        "0xfffffff0065ab180: pacia x8",
+        "0xfffffff0065ab188: autib x8",
+        "0xfffffff0065ab18c: xpaci x8"
+      ]
+    },
+    {
+      "name": "helper_build_surface_buffer",
+      "address": "0xfffffff0065ad400",
+      "size": 448,
+      "calls": [
+        "strcpy",
+        "kalloc",
+        "memcpy"
+      ],
+      "xrefs": [
+        "IOSurface::initWithProperties"
+      ],
+      "strings": [
+        "pixel",
+        "format",
+        "size",
+        "length"
+      ],
+      "complexity": 22,
+      "call_sites": [
+        "0xfffffff0065ad410: bl _strcpy",
+        "0xfffffff0065ad460: bl _kalloc"
+      ]
+    },
+    {
+      "name": "IOSurface::logStatistics()",
+      "address": "0xfffffff0065af000",
+      "size": 96,
+      "calls": [
+        "os_log"
+      ],
+      "xrefs": [],
+      "strings": [
+        "stats"
+      ],
+      "complexity": 2,
+      "call_sites": []
+    }
+  ],
+  "imports": [
+    "memcpy",
+    "memmove",
+    "kalloc",
+    "kfree",
+    "IOMalloc",
+    "copyin",
+    "copyout",
+    "strcpy",
+    "IOLockLock",
+    "IOLockUnlock"
+  ],
+  "strings": [
+    "kIOSurfaceAllocSize",
+    "kIOSurfaceWidth",
+    "kIOSurfaceHeight",
+    "bytesPerRow",
+    "pixelFormat",
+    "surfaceId"
+  ],
+  "metadata": {
+    "backend": "demo-fixture",
+    "analyzed_functions": 7,
+    "note": "合成数据，用于无 ipsw/r2 环境下演示流水线"
+  }
+}

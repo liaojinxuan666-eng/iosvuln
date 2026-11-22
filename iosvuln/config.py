@@ -40,6 +40,7 @@ class Config:
     keep_artifacts: bool = True
     home: str = ""                 # persistent store; empty -> ~/.iosvuln or IOSVULN_HOME
     archive: bool = True           # snapshot reports into the persistent home
+    no_symbolicate: bool = False   # skip demangling / address->symbol resolution
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Config":
