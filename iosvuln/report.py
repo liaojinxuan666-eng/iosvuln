@@ -77,7 +77,7 @@ def render_markdown(
         )
     target_lines.append("")
 
-    header, rest = lines[:3], lines[3:]
+    header, rest = lines[:3] + [""], lines[3:]
     lines = header + env_lines + target_lines + rest
 
     warnings = meta.get("warnings", [])
