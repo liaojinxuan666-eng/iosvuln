@@ -1,0 +1,8 @@
+Package: dev.iosvuln.collect
+Name: iosvuln Collector
+Version: 0.1.0
+Architecture: iphoneos-arm64
+Maintainer: iosvuln
+Description: On-device kernelcache / kext collector for iosvuln static analysis. Collects from system paths or a user-specified path; no exploit, no PoC, no behaviour modification.
+Section: Tweaks
+Depends: bash, coreutils, grep

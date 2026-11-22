@@ -1,0 +1,8 @@
+Package: dev.iosvuln.observe
+Name: iosvuln observe
+Version: 0.1
+Architecture: iphoneos-arm64
+Depends: mobilesubstrate (>= 0.9.5288) | ellekit
+Description: Extractive IOSurface symbol/address dumper for iosvuln (no behaviour modification)
+Maintainer: iosvuln
+Section: Tweaks
