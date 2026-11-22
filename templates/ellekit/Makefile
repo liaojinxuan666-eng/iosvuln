@@ -1,10 +1,9 @@
-TARGET := iosvuln_observe
+TARGET := iosvuln_extract
 TYPE := tweak
-FILE := Tweak.x
+FILE := Tweak.xm
+
+iosvuln_extract_FRAMEWORKS := Foundation
+iosvuln_extract_CFLAGS := -fobjc-arc
 
 include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/tweak.mk
-
-# rootless / Dopamine: set THEOS_PACKAGE_SCHEME=rootless when packaging
-after-install::
-	install.exec "killall -9 SpringBoard" || true

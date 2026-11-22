@@ -18,7 +18,7 @@ iOS 内核驱动（kext）**静态 + 提取式 Hook 双层分析流水线**。�
 5. report.md / report.json（按原语归集的汇编位置）
 ```
 
-**提取式 Hook**：`Tweak.x` 用 `MSFindSymbol` 解析 `IOSurface.framework` 符号，导出函数地址与前 96 字节机器码到 `/var/mobile/iosvuln/extracted.json`。**不安装 inline hook、不改写任何函数行为**。
+**提取式 Hook**：`Tweak.xm` 用 `MSFindSymbol` 解析 `IOSurface.framework` 符号，导出函数地址与前 96 字节机器码到 `/var/mobile/iosvuln/extracted.json`。**不安装 inline hook、不改写任何函数行为**。
 
 ## 安装
 

@@ -1,0 +1,108 @@
+name: Build Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.1)'
+        required: true
+        default: 'v0.1.1'
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  tweak:
+    name: Build rootless tweak deb (macOS + Theos)
+    runs-on: macos-14
+    env:
+      THEOS_PACKAGE_SCHEME: rootless
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install packaging tools
+        run: brew install dpkg
+
+      - name: Install Theos
+        run: |
+          git clone --recursive https://github.com/theos/theos.git "$HOME/theos"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+          echo "$HOME/theos/bin" >> "$GITHUB_PATH"
+
+      - name: Install iOS SDK
+        run: git clone --depth 1 https://github.com/theos/sdks.git "$HOME/theos/sdks"
+
+      - name: Show toolchain
+        run: |
+          echo "THEOS=$THEOS"
+          ls "$THEOS/sdks" | tail -5
+          which dpkg-deb
+
+      - name: Build tweak package
+        working-directory: templates/ellekit
+        run: make package FINALPACKAGE=1
+
+      - name: Upload tweak deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: iosvuln-tweak-deb
+          path: templates/ellekit/packages/*.deb
+          if-no-files-found: error
+
+  collector:
+    name: Build on-device collector deb
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: bash packaging/build_deb.sh
+      - name: Upload collector deb
+        uses: actions/upload-artifact@v4
+        with:
+          name: iosvuln-collector-deb
+          path: packaging/*.deb
+          if-no-files-found: error
+
+  source:
+    name: Package analysis tool source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Make source archive
+        run: |
+          mkdir -p release
+          git ls-files -z | xargs -0 zip -q release/iosvuln-source.zip
+      - name: Upload source archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: iosvuln-source
+          path: release/iosvuln-source.zip
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [tweak, collector, source]
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: List artifacts
+        run: find dist -type f -maxdepth 3 -print
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: iosvuln ${{ env.RELEASE_TAG }}
+          files: |
+            dist/**/*.deb
+            dist/**/*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: false

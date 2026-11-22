@@ -91,7 +91,7 @@ class PipelineTests(unittest.TestCase):
     def test_generate_tweak(self):
         with tempfile.TemporaryDirectory() as workdir:
             path = generate_tweak(workdir)
-            self.assertTrue(os.path.exists(os.path.join(path, "Tweak.x")))
+            self.assertTrue(os.path.exists(os.path.join(path, "Tweak.xm")))
 
 
 def _context(manifest, **kwargs):
