@@ -47,3 +47,8 @@ fastlane/test_output
 packaging/analyze-deb/usr/lib/iosvuln/iosvuln/
 packaging/analyze-deb/usr/lib/iosvuln/examples/
 packaging/analyze-deb/usr/lib/iosvuln/README.md
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
