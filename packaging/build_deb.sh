@@ -6,7 +6,7 @@ DEB="$ROOT/packaging/deb"
 OUT="$ROOT/packaging"
 
 mkdir -p "$DEB/usr/lib/iosvuln/tweak-source"
-cp "$ROOT/templates/ellekit/"* "$DEB/usr/lib/iosvuln/tweak-source/"
+find "$ROOT/templates/ellekit" -maxdepth 1 -type f -exec cp {} "$DEB/usr/lib/iosvuln/tweak-source/" \;
 chmod 0755 "$DEB/DEBIAN/postinst" "$DEB/usr/bin/iosvuln-collect" "$DEB/usr/lib/iosvuln/collect.sh"
 chmod 0644 "$DEB/DEBIAN/control"
 
